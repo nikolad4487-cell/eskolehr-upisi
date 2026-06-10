@@ -699,6 +699,17 @@ select:focus {
   color: #1f5a48;
 }
 
+.login-notice {
+  margin: 0;
+  padding: 11px 12px;
+  border: 1px solid #c8d8d3;
+  border-radius: 8px;
+  background: #eef6f3;
+  color: #17453f;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
 .sync-errors {
   margin: 0 18px 16px;
   padding: 10px 12px;

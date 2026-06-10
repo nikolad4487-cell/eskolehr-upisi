@@ -274,6 +274,28 @@ function isClassEligibleForAdmissions(record, track) {
   return false;
 }
 
+function getDeniedLoginMessage(section, isStudent) {
+  if (section === APP_SECTIONS.ematica.id) {
+    return isStudent
+      ? 'e-Matici mogu pristupiti samo administratori i razrednici.'
+      : 'Nemate pravo pristupa e-Matici.';
+  }
+
+  if (isStudent) {
+    return 'Administrator jo\u0161 nije povukao podatke iz e-Dnevnika, molimo obavijestiti razrednika.';
+  }
+
+  if (section === APP_SECTIONS.srednja.id) {
+    return 'Nemate pravo pristupa portalu za upis u srednju \u0161kolu.';
+  }
+
+  if (section === APP_SECTIONS.fakulteti.id) {
+    return 'Nemate pravo pristupa portalu za upis na fakultete.';
+  }
+
+  return 'Nemate pravo pristupa ovom sustavu.';
+}
+
 function App() {
   const [activePage, setActivePage] = useState('dashboard');
   const [activeSection, setActiveSection] = useState(() => getPreferredSectionFromHost());
@@ -282,8 +304,10 @@ function App() {
   const [access, setAccess] = useState(null);
   const [studentRecord, setStudentRecord] = useState(null);
   const [studentRecordLoading, setStudentRecordLoading] = useState(false);
+  const [studentRecordChecked, setStudentRecordChecked] = useState(false);
   const [profileLoading, setProfileLoading] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
+  const [authNotice, setAuthNotice] = useState('');
 
   useEffect(() => {
     if (!hasSupabaseConfig) {
@@ -292,11 +316,15 @@ function App() {
     }
 
     supabase.auth.getSession().then(({ data }) => {
+      setProfileLoading(Boolean(data.session?.user?.id));
+      setStudentRecordChecked(false);
       setSession(data.session);
       setAuthLoading(false);
     });
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setProfileLoading(Boolean(nextSession?.user?.id));
+      setStudentRecordChecked(false);
       setSession(nextSession);
     });
 
@@ -308,6 +336,7 @@ function App() {
       if (!session?.user?.id) {
         setProfile(null);
         setAccess(null);
+        setProfileLoading(false);
         return;
       }
 
@@ -348,9 +377,11 @@ function App() {
       if (!isStudent || !session?.user?.id) {
         setStudentRecord(null);
         setStudentRecordLoading(false);
+        setStudentRecordChecked(true);
         return;
       }
 
+      setStudentRecordChecked(false);
       setStudentRecordLoading(true);
       let result = null;
 
@@ -372,6 +403,7 @@ function App() {
 
       setStudentRecord(result?.data ?? null);
       setStudentRecordLoading(false);
+      setStudentRecordChecked(true);
     };
 
     loadStudentRecord();
@@ -399,11 +431,46 @@ function App() {
   const canUseActiveAdmissionsSection = activeSection === APP_SECTIONS.srednja.id
     ? canUseSecondaryAdmissions
     : canUseHigherAdmissions;
+  const accessChecksReady = Boolean(session)
+    && !authLoading
+    && !profileLoading
+    && !studentRecordLoading
+    && (!isStudent || studentRecordChecked);
+  const deniedLoginMessage = accessChecksReady && (
+    activeSection === APP_SECTIONS.ematica.id
+      ? !canUseEmaticaInApp
+      : !canUseActiveAdmissionsSection
+  )
+    ? getDeniedLoginMessage(activeSection, isStudent)
+    : '';
   const adminScope = {
     schoolId: access?.active_school_id ?? profile?.active_school_id ?? '',
     schoolName: access?.active_school_name ?? '',
     isScoped: Boolean(access?.active_school_id ?? profile?.active_school_id),
   };
+
+  useEffect(() => {
+    if (!deniedLoginMessage || !session) return;
+
+    let cancelled = false;
+
+    const signOutDeniedUser = async () => {
+      setAuthNotice(deniedLoginMessage);
+      await supabase.auth.signOut();
+      if (cancelled) return;
+      setSession(null);
+      setProfile(null);
+      setAccess(null);
+      setStudentRecord(null);
+      setStudentRecordChecked(false);
+    };
+
+    signOutDeniedUser();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [deniedLoginMessage, session]);
 
   const availableSections = useMemo(() => {
     if (forcedSection && appAllowsSection(forcedSection)) {
@@ -472,7 +539,7 @@ function App() {
   }
 
   if (!session) {
-    return <Login />;
+    return <Login notice={authNotice} onClearNotice={() => setAuthNotice('')} />;
   }
 
   if (profileLoading) {
@@ -480,6 +547,10 @@ function App() {
   }
 
   if (studentRecordLoading) {
+    return <Splash label="Provjera prava pristupa" />;
+  }
+
+  if (deniedLoginMessage) {
     return <Splash label="Provjera prava pristupa" />;
   }
 
@@ -589,7 +660,7 @@ function App() {
   );
 }
 
-function Login() {
+function Login({ notice = '', onClearNotice = () => {} }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -599,6 +670,7 @@ function Login() {
     event.preventDefault();
     setLoading(true);
     setError('');
+    onClearNotice();
     const { error: authError } = await supabase.auth.signInWithPassword({ email, password });
     setLoading(false);
     if (authError) setError(authError.message);
@@ -617,6 +689,7 @@ function Login() {
           Lozinka
           <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" required />
         </label>
+        {notice && <p className="login-notice">{notice}</p>}
         {error && <p className="error">{error}</p>}
         <button className="primary" type="submit" disabled={loading}>
           {loading ? <Loader2 className="spin" size={18} /> : <CheckCircle2 size={18} />}
