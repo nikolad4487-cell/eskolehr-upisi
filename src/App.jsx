@@ -125,12 +125,23 @@ function getPreferredSectionFromHost() {
   if (typeof window === 'undefined') return APP_SECTIONS.ematica.id;
   if (APP_MODE === 'ematica') return APP_SECTIONS.ematica.id;
 
+  const forced = getForcedSectionFromHost();
+  if (forced) return forced;
+
+  const host = window.location.hostname.toLowerCase();
+  if (host.startsWith('e-matica.') || host.startsWith('ematica.')) return APP_SECTIONS.ematica.id;
+  if (APP_MODE === 'upisi') return APP_SECTIONS.srednja.id;
+  return APP_SECTIONS.ematica.id;
+}
+
+function getForcedSectionFromHost() {
+  if (typeof window === 'undefined') return null;
   const host = window.location.hostname.toLowerCase();
   if (host.startsWith('srednja.')) return APP_SECTIONS.srednja.id;
   if (host.startsWith('fakulteti.')) return APP_SECTIONS.fakulteti.id;
   if (host.startsWith('e-matica.') || host.startsWith('ematica.')) return APP_SECTIONS.ematica.id;
-  if (APP_MODE === 'upisi') return APP_SECTIONS.srednja.id;
-  return APP_SECTIONS.ematica.id;
+  if (APP_MODE === 'ematica') return APP_SECTIONS.ematica.id;
+  return null;
 }
 
 function useSupabaseQuery(loader, deps = []) {
@@ -212,12 +223,65 @@ function getAdmissionsTrack(profile, access) {
   return 'UNKNOWN';
 }
 
+function getActiveSchoolLevel(profile, access, studentRecord = null) {
+  return access?.active_school_level
+    ?? profile?.active_school_level
+    ?? profile?.education_level
+    ?? studentRecord?.school_level
+    ?? studentRecord?.education_level
+    ?? null;
+}
+
+function getClassGradeLevel(record) {
+  const direct = Number(record?.grade_level);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const match = String(record?.class_name ?? '').match(/\d+/);
+  return match ? Number(match[0]) : null;
+}
+
+function isDifferentialClass(record) {
+  return String(record?.class_name ?? '').trim().toUpperCase() === '4.K';
+}
+
+function getProgramDurationYears(record) {
+  const duration = Number(record?.program_duration_years ?? record?.duration_years ?? record?.program_duration);
+  return Number.isFinite(duration) && duration > 0 ? duration : null;
+}
+
+function isSecondaryAdmissionsEligibleStudent(studentRecord, schoolLevel) {
+  return Boolean(studentRecord)
+    && schoolLevel === 'ELEMENTARY'
+    && getClassGradeLevel(studentRecord) === 8
+    && String(studentRecord.student_status ?? 'ACTIVE') === 'ACTIVE';
+}
+
+function isHigherAdmissionsEligibleStudent(studentRecord, schoolLevel) {
+  if (!studentRecord || schoolLevel !== 'SECONDARY' || isDifferentialClass(studentRecord)) return false;
+  const gradeLevel = getClassGradeLevel(studentRecord);
+  const duration = getProgramDurationYears(studentRecord);
+  const finalGrade = duration ?? 4;
+  return gradeLevel === finalGrade && String(studentRecord.student_status ?? 'ACTIVE') === 'ACTIVE';
+}
+
+function isClassEligibleForAdmissions(record, track) {
+  if (track === 'SECONDARY') return getClassGradeLevel(record) === 8;
+  if (track === 'HIGHER_EDUCATION') {
+    if (isDifferentialClass(record)) return false;
+    const gradeLevel = getClassGradeLevel(record);
+    const duration = getProgramDurationYears(record);
+    return duration ? gradeLevel === duration : [4, 5].includes(gradeLevel);
+  }
+  return false;
+}
+
 function App() {
   const [activePage, setActivePage] = useState('dashboard');
   const [activeSection, setActiveSection] = useState(() => getPreferredSectionFromHost());
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
   const [access, setAccess] = useState(null);
+  const [studentRecord, setStudentRecord] = useState(null);
+  const [studentRecordLoading, setStudentRecordLoading] = useState(false);
   const [profileLoading, setProfileLoading] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
 
@@ -276,11 +340,65 @@ function App() {
   const isTeacher = isTeacherProfile(profile, access);
   const isAdmin = isAdminProfile(profile, access);
   const isHomeroomTeacher = Boolean(access?.is_homeroom_teacher);
+  const forcedSection = getForcedSectionFromHost();
+  const activeSchoolLevel = getActiveSchoolLevel(profile, access, studentRecord);
+
+  useEffect(() => {
+    const loadStudentRecord = async () => {
+      if (!isStudent || !session?.user?.id) {
+        setStudentRecord(null);
+        setStudentRecordLoading(false);
+        return;
+      }
+
+      setStudentRecordLoading(true);
+      let result = null;
+
+      if (profile?.id) {
+        result = await supabase
+          .from('v_ematica_students_current')
+          .select('*')
+          .eq('ednevnik_student_id', profile.id)
+          .maybeSingle();
+      }
+
+      if ((!result || (!result.data && !result.error)) && session?.user?.email) {
+        result = await supabase
+          .from('v_ematica_students_current')
+          .select('*')
+          .eq('email', session.user.email)
+          .maybeSingle();
+      }
+
+      setStudentRecord(result?.data ?? null);
+      setStudentRecordLoading(false);
+    };
+
+    loadStudentRecord();
+  }, [isStudent, profile?.id, session?.user?.id, session?.user?.email]);
+
   const canUseEmatica = isAdmin || isHomeroomTeacher;
   const admissionsTrack = getAdmissionsTrack(profile, access);
-  const canUseAdmissions = isStudent || isTeacher || canUseEmatica;
+  const canUseSecondaryAdmissions = isStudent
+    ? isSecondaryAdmissionsEligibleStudent(studentRecord, activeSchoolLevel)
+    : (
+        (activeSchoolLevel === 'ELEMENTARY' && (isAdmin || isHomeroomTeacher))
+        || (activeSchoolLevel === 'SECONDARY' && isAdmin)
+      );
+  const canUseHigherAdmissions = isStudent
+    ? isHigherAdmissionsEligibleStudent(studentRecord, activeSchoolLevel)
+    : (
+        (activeSchoolLevel === 'SECONDARY' && (isAdmin || isHomeroomTeacher))
+        || (activeSchoolLevel === 'HIGHER' && isAdmin)
+      );
   const canUseEmaticaInApp = appAllowsSection(APP_SECTIONS.ematica.id) && canUseEmatica;
-  const canUseAdmissionsInApp = appAllowsSection(APP_SECTIONS.srednja.id) && canUseAdmissions;
+  const canUseAdmissionsInApp = (
+    (appAllowsSection(APP_SECTIONS.srednja.id) && canUseSecondaryAdmissions)
+    || (appAllowsSection(APP_SECTIONS.fakulteti.id) && canUseHigherAdmissions)
+  );
+  const canUseActiveAdmissionsSection = activeSection === APP_SECTIONS.srednja.id
+    ? canUseSecondaryAdmissions
+    : canUseHigherAdmissions;
   const adminScope = {
     schoolId: access?.active_school_id ?? profile?.active_school_id ?? '',
     schoolName: access?.active_school_name ?? '',
@@ -288,24 +406,26 @@ function App() {
   };
 
   const availableSections = useMemo(() => {
+    if (forcedSection && appAllowsSection(forcedSection)) {
+      return [forcedSection];
+    }
+
     const sections = [];
 
     if (canUseEmaticaInApp) {
       sections.push(APP_SECTIONS.ematica.id);
     }
 
-    if (canUseAdmissionsInApp) {
-      if (admissionsTrack === 'SECONDARY') {
-        sections.push(APP_SECTIONS.srednja.id);
-      } else if (admissionsTrack === 'HIGHER_EDUCATION') {
-        sections.push(APP_SECTIONS.fakulteti.id);
-      } else {
-        sections.push(APP_SECTIONS.srednja.id, APP_SECTIONS.fakulteti.id);
-      }
+    if (appAllowsSection(APP_SECTIONS.srednja.id) && canUseSecondaryAdmissions) {
+      sections.push(APP_SECTIONS.srednja.id);
+    }
+
+    if (appAllowsSection(APP_SECTIONS.fakulteti.id) && canUseHigherAdmissions) {
+      sections.push(APP_SECTIONS.fakulteti.id);
     }
 
     return [...new Set(sections.filter(appAllowsSection))];
-  }, [admissionsTrack, canUseAdmissionsInApp, canUseEmaticaInApp]);
+  }, [canUseEmaticaInApp, canUseHigherAdmissions, canUseSecondaryAdmissions, forcedSection]);
 
   useEffect(() => {
     if (!availableSections.length) return;
@@ -324,11 +444,11 @@ function App() {
   const admissionsNavItems = isStudent ? STUDENT_NAV_ITEMS : TEACHER_ADMISSIONS_NAV_ITEMS;
   const navItems = activeSection === APP_SECTIONS.ematica.id
     ? (canUseEmaticaInApp ? (isAdmin ? EMATICA_NAV_ITEMS : HOMEROOM_NAV_ITEMS) : LOCKED_NAV_ITEMS)
-    : (canUseAdmissionsInApp ? admissionsNavItems : LOCKED_NAV_ITEMS);
+    : (canUseActiveAdmissionsSection ? admissionsNavItems : LOCKED_NAV_ITEMS);
 
   useEffect(() => {
     if (!navItems.some((item) => item.id === activePage)) {
-      setActivePage('dashboard');
+      setActivePage(navItems[0]?.id ?? 'locked');
     }
   }, [activePage, navItems]);
 
@@ -357,6 +477,10 @@ function App() {
 
   if (profileLoading) {
     return <Splash label="Učitavanje korisničkog profila" />;
+  }
+
+  if (studentRecordLoading) {
+    return <Splash label="Provjera prava pristupa" />;
   }
 
   return (
@@ -424,7 +548,7 @@ function App() {
         </header>
 
         <section className="content">
-          {activeSection === APP_SECTIONS.ematica.id && !canUseEmaticaInApp && activePage === 'locked' && <AccessLocked />}
+          {activeSection === APP_SECTIONS.ematica.id && !canUseEmaticaInApp && activePage === 'locked' && <AccessLocked section={activeSection} />}
           {activeSection === APP_SECTIONS.ematica.id && canUseEmaticaInApp && activePage === 'dashboard' && (isAdmin ? <Dashboard /> : <HomeroomDashboard profile={profile} />)}
           {activeSection === APP_SECTIONS.ematica.id && canUseEmaticaInApp && isAdmin && activePage === 'schools' && <Schools adminScope={adminScope} />}
           {activeSection === APP_SECTIONS.ematica.id && canUseEmaticaInApp && isAdmin && activePage === 'years' && <SchoolYears adminScope={adminScope} />}
@@ -440,7 +564,7 @@ function App() {
           {activeSection === APP_SECTIONS.ematica.id && canUseEmaticaInApp && isAdmin && activePage === 'reports' && <Reports />}
           {activeSection === APP_SECTIONS.ematica.id && canUseEmaticaInApp && isAdmin && activePage === 'access' && <AccessManagement />}
 
-          {activeSection !== APP_SECTIONS.ematica.id && canUseAdmissionsInApp && activePage === 'dashboard' && (
+          {activeSection !== APP_SECTIONS.ematica.id && canUseActiveAdmissionsSection && activePage === 'dashboard' && (
             <AdmissionsHome
               title={admissionsTitle}
               section={activeSectionMeta}
@@ -448,7 +572,7 @@ function App() {
               isManager={!isStudent}
             />
           )}
-          {activeSection !== APP_SECTIONS.ematica.id && canUseAdmissionsInApp && activePage === 'admissions' && (
+          {activeSection !== APP_SECTIONS.ematica.id && canUseActiveAdmissionsSection && activePage === 'admissions' && (
             <AdmissionsModule
               track={activeSection === APP_SECTIONS.fakulteti.id ? 'HIGHER_EDUCATION' : 'SECONDARY'}
               profile={profile}
@@ -458,7 +582,7 @@ function App() {
               isManager={!isStudent}
             />
           )}
-          {activeSection !== APP_SECTIONS.ematica.id && !canUseAdmissionsInApp && activePage === 'locked' && <AccessLocked />}
+          {activeSection !== APP_SECTIONS.ematica.id && !canUseActiveAdmissionsSection && activePage === 'locked' && <AccessLocked section={activeSection} />}
         </section>
       </main>
     </div>
@@ -729,11 +853,7 @@ function AdmissionsModule({ track, profile, session, access, isStudent = false, 
   const [choiceForm, setChoiceForm] = useState({ target_program_id: '', priority: 1 });
   const [workflowForm, setWorkflowForm] = useState({ candidate_id: '', points: '' });
   const [message, setMessage] = useState('');
-  const eligibleClasses = classes.data.filter((item) => {
-    const className = String(item.class_name ?? '').toUpperCase();
-    if (effectiveTrack === 'SECONDARY') return Number(item.grade_level) === 8 || className.startsWith('8.');
-    return [4, 5].includes(Number(item.grade_level)) || className.startsWith('4.') || className.startsWith('5.');
-  });
+  const eligibleClasses = classes.data.filter((item) => isClassEligibleForAdmissions(item, effectiveTrack));
   const currentCandidate = candidates.data.find((item) => item.ednevnik_student_id === profile?.id || item.email === session?.user?.email) ?? null;
   const choices = useSupabaseQuery(async () => {
     if (!currentCandidate?.candidate_id) return { data: [], error: null };
@@ -1073,12 +1193,20 @@ function AdmissionsModule({ track, profile, session, access, isStudent = false, 
   );
 }
 
-function AccessLocked() {
+function AccessLocked({ section = null }) {
+  const message = section === APP_SECTIONS.ematica.id
+    ? 'e-Matici mogu pristupiti samo administratori i razrednici.'
+    : section === APP_SECTIONS.srednja.id
+      ? 'Upisi u srednju dostupni su samo učenicima 8. razreda osnovne škole i ovlaštenim razrednicima/adminima.'
+      : section === APP_SECTIONS.fakulteti.id
+        ? 'Upisi na fakultete dostupni su samo učenicima završnog razreda srednje škole i ovlaštenim razrednicima/adminima.'
+        : 'Korisnik nema dodijeljenu ulogu za ovaj sustav.';
+
   return (
     <Panel title="Pristup nije dodijeljen">
       <div className="empty-detail">
         <ShieldAlert size={34} />
-        <p>Korisnik nema dodijeljenu ulogu za e-Maticu ili e-Upise.</p>
+        <p>{message}</p>
       </div>
     </Panel>
   );
