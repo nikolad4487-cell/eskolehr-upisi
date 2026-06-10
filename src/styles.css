@@ -884,6 +884,40 @@ select:focus {
   color: #3d4a47;
 }
 
+.email-input {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  border: 1px solid #cad8dd;
+  border-radius: 7px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.email-input:focus-within {
+  outline: 2px solid #8bc4bc;
+  border-color: #1f6f75;
+}
+
+.email-input input {
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+}
+
+.email-input input:focus {
+  outline: 0;
+  border-color: transparent;
+}
+
+.email-input span {
+  flex: 0 0 auto;
+  padding: 0 10px 0 2px;
+  color: #52625f;
+  user-select: none;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

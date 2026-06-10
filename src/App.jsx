@@ -660,18 +660,29 @@ function App() {
   );
 }
 
+function normalizeLoginEmail(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!normalized) return '';
+  return normalized.includes('@') ? normalized : `${normalized}@eskole.me`;
+}
+
 function Login({ notice = '', onClearNotice = () => {} }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const hasEmailDomain = email.includes('@');
 
   const signIn = async (event) => {
     event.preventDefault();
     setLoading(true);
     setError('');
     onClearNotice();
-    const { error: authError } = await supabase.auth.signInWithPassword({ email, password });
+    const normalizedEmail = normalizeLoginEmail(email);
+    const { error: authError } = await supabase.auth.signInWithPassword({
+      email: normalizedEmail,
+      password,
+    });
     setLoading(false);
     if (authError) setError(authError.message);
   };
@@ -683,7 +694,19 @@ function Login({ notice = '', onClearNotice = () => {} }) {
         <h1>ŠkoleHR Admin</h1>
         <label>
           E-mail
-          <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required />
+          <div className="email-input">
+            <input
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              type="text"
+              inputMode="email"
+              autoComplete="username"
+              placeholder="ime.prezime"
+              aria-label="E-mail ili korisnicko ime"
+              required
+            />
+            {!hasEmailDomain && <span aria-hidden="true">@eskole.me</span>}
+          </div>
         </label>
         <label>
           Lozinka
