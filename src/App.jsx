@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRightLeft,
   BookOpen,
@@ -8,8 +8,11 @@ import {
   ClipboardList,
   Database,
   Download,
+  Eye,
+  EyeOff,
   FileText,
   GraduationCap,
+  KeyRound,
   LayoutDashboard,
   Loader2,
   LogOut,
@@ -31,6 +34,7 @@ const EMATICA_NAV_ITEMS = [
   { id: 'students', label: 'Učenici', icon: Users },
   { id: 'enrollments', label: 'Upisi', icon: UserPlus },
   { id: 'admissions', label: 'e-Upisi', icon: GraduationCap },
+  { id: 'student-pins', label: 'Pinovi učenika', icon: KeyRound },
   { id: 'transfers', label: 'Premještaji učenika', icon: ArrowRightLeft },
   { id: 'transition', label: 'Prijelaz školske godine', icon: GraduationCap },
   { id: 'sync', label: 'Sinkronizacija e-Dnevnik', icon: Database },
@@ -69,18 +73,24 @@ const APP_SECTIONS = {
     id: 'ematica',
     label: 'e-Matica',
     shortLabel: 'e-Matica',
+    productName: 'e-Matica',
+    loginSubtitle: 'Mati\u010dne evidencije, prijelazi i svjedod\u017ebe',
     subtitle: 'Administracija, matične evidencije i završni dokumenti',
   },
   srednja: {
     id: 'srednja',
     label: 'Upisi u srednju',
     shortLabel: 'Srednja',
+    productName: 'Upisi u srednju',
+    loginSubtitle: 'Prijava kandidata za upis u srednje \u0161kole',
     subtitle: 'Kandidature i rang-liste za srednje škole',
   },
   fakulteti: {
     id: 'fakulteti',
     label: 'Upisi na fakultete',
     shortLabel: 'Fakulteti',
+    productName: 'Upisi na fakultete',
+    loginSubtitle: 'Prijava kandidata za upis na fakultete',
     subtitle: 'Kandidature i rang-liste za visoka učilišta',
   },
 };
@@ -308,6 +318,15 @@ function App() {
   const [profileLoading, setProfileLoading] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
   const [authNotice, setAuthNotice] = useState('');
+  const [pinCheckLoading, setPinCheckLoading] = useState(false);
+  const [admissionsPinVerified, setAdmissionsPinVerified] = useState(false);
+  const [admissionsPinContext, setAdmissionsPinContext] = useState(null);
+  const pinVerificationStarted = useRef('');
+  const [passwordRecovery, setPasswordRecovery] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.location.hash.includes('type=recovery')
+      || new URLSearchParams(window.location.search).get('type') === 'recovery';
+  });
 
   useEffect(() => {
     if (!hasSupabaseConfig) {
@@ -322,7 +341,10 @@ function App() {
       setAuthLoading(false);
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setPasswordRecovery(true);
+      }
       setProfileLoading(Boolean(nextSession?.user?.id));
       setStudentRecordChecked(false);
       setSession(nextSession);
@@ -433,6 +455,7 @@ function App() {
     : canUseHigherAdmissions;
   const accessChecksReady = Boolean(session)
     && !authLoading
+    && !passwordRecovery
     && !profileLoading
     && !studentRecordLoading
     && (!isStudent || studentRecordChecked);
@@ -443,6 +466,10 @@ function App() {
   )
     ? getDeniedLoginMessage(activeSection, isStudent)
     : '';
+  const requiresAdmissionsPin = accessChecksReady
+    && isStudent
+    && activeSection !== APP_SECTIONS.ematica.id
+    && canUseActiveAdmissionsSection;
   const adminScope = {
     schoolId: access?.active_school_id ?? profile?.active_school_id ?? '',
     schoolName: access?.active_school_name ?? '',
@@ -471,6 +498,111 @@ function App() {
       cancelled = true;
     };
   }, [deniedLoginMessage, session]);
+
+  useEffect(() => {
+    if (!requiresAdmissionsPin || !session) {
+      setPinCheckLoading(false);
+      setAdmissionsPinVerified(false);
+      setAdmissionsPinContext(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const checkPinStatus = async () => {
+      setPinCheckLoading(true);
+      const track = activeSection === APP_SECTIONS.fakulteti.id
+        ? 'HIGHER_EDUCATION'
+        : 'SECONDARY';
+      const { data, error } = await supabase.rpc('get_my_admission_pin_status', {
+        p_track: track,
+      });
+
+      if (cancelled) return;
+
+      const status = Array.isArray(data) ? data[0] : data;
+      if (error) {
+        setAdmissionsPinContext({
+          track,
+          error: error.message,
+          maskedPhone: '',
+          pinAssigned: false,
+          retryAfterSeconds: 0,
+        });
+        setAdmissionsPinVerified(false);
+        setPinCheckLoading(false);
+        return;
+      }
+
+      if (!status?.candidate_exists) {
+        setAuthNotice('Administrator jo\u0161 nije povukao podatke iz e-Dnevnika, molimo obavijestiti razrednika.');
+        await supabase.auth.signOut();
+        return;
+      }
+
+      setAdmissionsPinContext({
+        track,
+        error: '',
+        maskedPhone: status.masked_phone ?? '',
+        pinAssigned: Boolean(status.pin_assigned),
+        retryAfterSeconds: Number(status.retry_after_seconds ?? 0),
+      });
+      setAdmissionsPinVerified(Boolean(status.pin_verified));
+      setPinCheckLoading(Boolean(status.pin_assigned) && !status.pin_verified);
+    };
+
+    checkPinStatus();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSection, requiresAdmissionsPin, session]);
+
+  useEffect(() => {
+    if (
+      !requiresAdmissionsPin
+      || !session?.user?.id
+      || !admissionsPinContext?.pinAssigned
+      || admissionsPinVerified
+    ) {
+      return;
+    }
+
+    const verificationKey = `${session.user.id}:${admissionsPinContext.track}:${session.access_token?.slice(-16) ?? ''}`;
+    if (pinVerificationStarted.current === verificationKey) return;
+    pinVerificationStarted.current = verificationKey;
+
+    const verifyLoginPin = async () => {
+      const pin = window.sessionStorage.getItem('admissions_login_pin') ?? '';
+      window.sessionStorage.removeItem('admissions_login_pin');
+
+      if (!/^\d{4}$/.test(pin)) {
+        setAuthNotice('Za prijavu u e-Upise potrebno je unijeti trajni PIN.');
+        await supabase.auth.signOut();
+        return;
+      }
+
+      const { data, error } = await supabase.functions.invoke('verify-admissions-pin', {
+        body: { track: admissionsPinContext.track, pin },
+      });
+
+      if (error || data?.error || !data?.verified) {
+        setAuthNotice(await getEdgeFunctionErrorMessage(data, error, 'PIN nije ispravan.'));
+        await supabase.auth.signOut();
+        return;
+      }
+
+      setAdmissionsPinVerified(true);
+      setPinCheckLoading(false);
+    };
+
+    verifyLoginPin();
+  }, [
+    admissionsPinContext,
+    admissionsPinVerified,
+    requiresAdmissionsPin,
+    session?.user?.id,
+  ]);
 
   const availableSections = useMemo(() => {
     if (forcedSection && appAllowsSection(forcedSection)) {
@@ -538,8 +670,27 @@ function App() {
     return <ConfigMissing />;
   }
 
+  if (passwordRecovery && session) {
+    return (
+      <PasswordRecovery
+        section={activeSectionMeta}
+        onComplete={async () => {
+          await supabase.auth.signOut();
+          setPasswordRecovery(false);
+          setAuthNotice('Lozinka je uspje\u0161no promijenjena. Mo\u017eete se prijaviti.');
+        }}
+      />
+    );
+  }
+
   if (!session) {
-    return <Login notice={authNotice} onClearNotice={() => setAuthNotice('')} />;
+    return (
+      <Login
+        section={activeSectionMeta}
+        notice={authNotice}
+        onClearNotice={() => setAuthNotice('')}
+      />
+    );
   }
 
   if (profileLoading) {
@@ -554,13 +705,31 @@ function App() {
     return <Splash label="Provjera prava pristupa" />;
   }
 
+  if (requiresAdmissionsPin && pinCheckLoading) {
+    return <Splash label="Provjera SMS PIN-a" />;
+  }
+
+  if (requiresAdmissionsPin && !admissionsPinContext?.pinAssigned) {
+    return (
+      <FirstAdmissionsActivation
+        section={activeSectionMeta}
+        context={admissionsPinContext}
+        onComplete={async (message) => {
+          setAuthNotice(message);
+          await supabase.auth.signOut();
+        }}
+        onCancel={() => supabase.auth.signOut()}
+      />
+    );
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
           <School size={26} />
           <div>
-            <strong>ŠkoleHR Admin</strong>
+            <strong>{activeSectionMeta.productName}</strong>
             <span>Samostalni sustav za e-Maticu i upise</span>
           </div>
         </div>
@@ -628,6 +797,7 @@ function App() {
           {activeSection === APP_SECTIONS.ematica.id && canUseEmaticaInApp && activePage === 'students' && <Students scopeProfile={profile} isAdmin={isAdmin} />}
           {activeSection === APP_SECTIONS.ematica.id && canUseEmaticaInApp && activePage === 'enrollments' && <Enrollments />}
           {activeSection === APP_SECTIONS.ematica.id && canUseEmaticaInApp && activePage === 'admissions' && <AdmissionsModule track={admissionsTrack} profile={profile} session={session} access={access} isStudent={false} isManager />}
+          {activeSection === APP_SECTIONS.ematica.id && canUseEmaticaInApp && isAdmin && activePage === 'student-pins' && <StudentPins />}
           {activeSection === APP_SECTIONS.ematica.id && canUseEmaticaInApp && activePage === 'transfers' && <Transfers />}
           {activeSection === APP_SECTIONS.ematica.id && canUseEmaticaInApp && activePage === 'transition' && <YearTransition />}
           {activeSection === APP_SECTIONS.ematica.id && canUseEmaticaInApp && activePage === 'sync' && <EdnevnikSync />}
@@ -666,32 +836,144 @@ function normalizeLoginEmail(value) {
   return normalized.includes('@') ? normalized : `${normalized}@eskole.me`;
 }
 
-function Login({ notice = '', onClearNotice = () => {} }) {
+function getAuthErrorMessage(error) {
+  const message = String(error?.message ?? '').toLowerCase();
+  if (message.includes('invalid login credentials')) {
+    return 'Korisni\u010dko ime ili lozinka nisu ispravni.';
+  }
+  if (message.includes('email not confirmed')) {
+    return 'E-mail adresa jo\u0161 nije potvr\u0111ena.';
+  }
+  if (message.includes('rate limit') || message.includes('too many requests')) {
+    return 'Previ\u0161e poku\u0161aja. Pri\u010dekajte nekoliko minuta i poku\u0161ajte ponovno.';
+  }
+  return error?.message || 'Prijava trenutno nije dostupna.';
+}
+
+async function getEdgeFunctionErrorMessage(data, error, fallback) {
+  if (data?.error) return data.error;
+
+  try {
+    const response = error?.context;
+    if (response && typeof response.clone === 'function') {
+      const body = await response.clone().json();
+      if (body?.error) return body.error;
+    }
+  } catch {
+    // Use the SDK error message below when the response body is unavailable.
+  }
+
+  return error?.message || fallback;
+}
+
+function Login({ section = APP_SECTIONS.ematica, notice = '', onClearNotice = () => {} }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [pin, setPin] = useState('');
+  const [pinRequired, setPinRequired] = useState(false);
+  const [pinRequirementLoading, setPinRequirementLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [resetMode, setResetMode] = useState(false);
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const hasEmailDomain = email.includes('@');
+  const isAdmissionsLogin = section.id !== APP_SECTIONS.ematica.id;
+
+  const checkPinRequirement = async (value = email) => {
+    if (!isAdmissionsLogin || !String(value).trim()) {
+      setPinRequired(false);
+      return false;
+    }
+
+    setPinRequirementLoading(true);
+    const { data, error: requirementError } = await supabase.rpc(
+      'admission_login_requires_pin',
+      { p_username: String(value).trim() },
+    );
+    setPinRequirementLoading(false);
+
+    if (requirementError) return false;
+    const required = Boolean(data);
+    setPinRequired(required);
+    return required;
+  };
+
+  useEffect(() => {
+    if (!isAdmissionsLogin || !email.trim()) {
+      setPinRequired(false);
+      return undefined;
+    }
+
+    const timer = window.setTimeout(() => {
+      checkPinRequirement(email);
+    }, 350);
+
+    return () => window.clearTimeout(timer);
+  }, [email, isAdmissionsLogin]);
 
   const signIn = async (event) => {
     event.preventDefault();
     setLoading(true);
     setError('');
+    setMessage('');
     onClearNotice();
+    const requiresPin = await checkPinRequirement();
+    if (requiresPin && !/^\d{4}$/.test(pin)) {
+      setLoading(false);
+      setError('Unesite svoj četveroznamenkasti PIN.');
+      return;
+    }
+
+    if (isAdmissionsLogin) {
+      if (requiresPin) {
+        window.sessionStorage.setItem('admissions_login_pin', pin);
+      } else {
+        window.sessionStorage.removeItem('admissions_login_pin');
+      }
+    }
+
     const normalizedEmail = normalizeLoginEmail(email);
     const { error: authError } = await supabase.auth.signInWithPassword({
       email: normalizedEmail,
       password,
     });
     setLoading(false);
-    if (authError) setError(authError.message);
+    if (authError) setError(getAuthErrorMessage(authError));
+  };
+
+  const requestPasswordReset = async (event) => {
+    event.preventDefault();
+    setLoading(true);
+    setError('');
+    setMessage('');
+    onClearNotice();
+
+    const normalizedEmail = normalizeLoginEmail(email);
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
+      redirectTo: window.location.origin,
+    });
+
+    setLoading(false);
+    if (resetError) {
+      setError(getAuthErrorMessage(resetError));
+      return;
+    }
+
+    setMessage('Poveznica za promjenu lozinke poslana je na va\u0161 e-mail.');
   };
 
   return (
     <main className="auth-screen">
-      <form className="auth-panel" onSubmit={signIn}>
-        <School size={34} />
-        <h1>ŠkoleHR Admin</h1>
+      <form className="auth-panel" onSubmit={resetMode ? requestPasswordReset : signIn}>
+        <div className="auth-brand">
+          <School size={34} />
+          <span>ŠkoleHR</span>
+        </div>
+        <div className="auth-heading">
+          <h1>{resetMode ? 'Promjena lozinke' : section.productName}</h1>
+          <p>{resetMode ? 'Unesite korisni\u010dko ime ili e-mail adresu.' : section.loginSubtitle}</p>
+        </div>
         <label>
           E-mail
           <div className="email-input">
@@ -708,15 +990,362 @@ function Login({ notice = '', onClearNotice = () => {} }) {
             {!hasEmailDomain && <span aria-hidden="true">@eskole.me</span>}
           </div>
         </label>
-        <label>
-          Lozinka
-          <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" required />
-        </label>
+        {!resetMode && (
+          <label>
+            Lozinka
+            <div className="password-input">
+              <input
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                type={showPassword ? 'text' : 'password'}
+                autoComplete="current-password"
+                required
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((current) => !current)}
+                title={showPassword ? 'Sakrij lozinku' : 'Prika\u017ei lozinku'}
+                aria-label={showPassword ? 'Sakrij lozinku' : 'Prika\u017ei lozinku'}
+              >
+                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+              </button>
+            </div>
+          </label>
+        )}
+        {!resetMode && isAdmissionsLogin && pinRequired && (
+          <label>
+            PIN
+            <input
+              className="pin-login-input"
+              value={pin}
+              onChange={(event) => setPin(event.target.value.replace(/\D/g, '').slice(0, 4))}
+              type="text"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              placeholder="0000"
+              maxLength={4}
+              required
+            />
+          </label>
+        )}
         {notice && <p className="login-notice">{notice}</p>}
+        {message && <p className="login-notice">{message}</p>}
+        {error && <p className="error">{error}</p>}
+        <button className="primary" type="submit" disabled={loading || pinRequirementLoading}>
+          {loading || pinRequirementLoading ? <Loader2 className="spin" size={18} /> : <CheckCircle2 size={18} />}
+          <span>{resetMode ? 'Po\u0161alji poveznicu' : 'Prijavi se'}</span>
+        </button>
+        <button
+          className="auth-link"
+          type="button"
+          onClick={() => {
+            setResetMode((current) => !current);
+            setError('');
+            setMessage('');
+          }}
+        >
+          {resetMode ? 'Povratak na prijavu' : 'Zaboravili ste lozinku?'}
+        </button>
+      </form>
+    </main>
+  );
+}
+
+function FirstAdmissionsActivation({ section, context, onComplete, onCancel }) {
+  const [phone, setPhone] = useState('');
+  const [error, setError] = useState(context?.error ?? '');
+  const [sending, setSending] = useState(false);
+
+  const sendPin = async (event) => {
+    event.preventDefault();
+    const digits = phone.replace(/\D/g, '');
+
+    if (!/^\d{9}$/.test(digits)) {
+      setError('Unesite broj mobitela od 9 znamenki, primjerice 915828966.');
+      return;
+    }
+
+    setSending(true);
+    setError('');
+    const { data, error: functionError } = await supabase.functions.invoke('send-admissions-pin', {
+      body: {
+        track: context?.track,
+        phone_number: digits,
+      },
+    });
+    setSending(false);
+
+    if (functionError || data?.error || !data?.sent) {
+      setError(await getEdgeFunctionErrorMessage(data, functionError, 'PIN nije moguće poslati.'));
+      return;
+    }
+
+    await onComplete(
+      'PIN je poslan SMS-om. Ponovno se prijavite korisničkim imenom, lozinkom i dobivenim PIN-om.',
+    );
+  };
+
+  return (
+    <main className="auth-screen">
+      <form className="auth-panel pin-panel" onSubmit={sendPin}>
+        <div className="auth-brand">
+          <School size={34} />
+          <span>ŠkoleHR</span>
+        </div>
+        <div className="auth-heading">
+          <h1>Aktivacija e-Upisa</h1>
+          <p>{section.productName}</p>
+        </div>
+        <div className="pin-explanation">
+          <ShieldAlert size={20} />
+          <p>
+            Ovo je vaša prva prijava. Unesite broj mobitela na koji ćemo poslati
+            vaš trajni četveroznamenkasti PIN.
+          </p>
+        </div>
+        <label>
+          Broj mobitela
+          <div className="phone-input">
+            <span aria-hidden="true">+385</span>
+            <input
+              value={phone}
+              onChange={(event) => setPhone(event.target.value.replace(/\D/g, '').slice(0, 9))}
+              type="text"
+              inputMode="tel"
+              autoComplete="tel-national"
+              placeholder="915828966"
+              maxLength={9}
+              aria-label="Broj mobitela bez pozivnog broja"
+              autoFocus
+              required
+            />
+          </div>
+        </label>
+        <p className="auth-help">
+          Nakon slanja PIN-a sustav će vas odjaviti. Pri sljedećoj prijavi unesite
+          korisničko ime, lozinku i PIN iz SMS poruke.
+        </p>
+        {error && <p className="error">{error}</p>}
+        <button className="primary" type="submit" disabled={sending || phone.length !== 9}>
+          {sending ? <Loader2 className="spin" size={18} /> : <CheckCircle2 size={18} />}
+          <span>Pošalji PIN</span>
+        </button>
+        <button className="auth-link" type="button" onClick={onCancel}>
+          Odustani i odjavi se
+        </button>
+      </form>
+    </main>
+  );
+}
+
+function AdmissionsPinChallenge({ section, context, onVerified, onCancel }) {
+  const [pin, setPin] = useState('');
+  const [maskedPhone, setMaskedPhone] = useState(context?.maskedPhone ?? '');
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState(context?.error ?? '');
+  const [sending, setSending] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [retryAfter, setRetryAfter] = useState(Number(context?.retryAfterSeconds ?? 0));
+  const initialRequestHandled = useRef(false);
+
+  const sendPin = async () => {
+    setSending(true);
+    setError('');
+    setMessage('');
+
+    const { data, error: functionError } = await supabase.functions.invoke('send-admissions-pin', {
+      body: { track: context?.track },
+    });
+
+    setSending(false);
+    if (functionError || data?.error) {
+      setError(await getEdgeFunctionErrorMessage(data, functionError, 'PIN nije mogu\u0107e poslati.'));
+      if (data?.retry_after_seconds) setRetryAfter(Number(data.retry_after_seconds));
+      return;
+    }
+
+    setMaskedPhone(data?.masked_phone ?? maskedPhone);
+    setRetryAfter(60);
+    setMessage('Vaš trajni PIN ponovno je poslan SMS-om.');
+  };
+
+  useEffect(() => {
+    if (initialRequestHandled.current || context?.error) return;
+    initialRequestHandled.current = true;
+    if (!context?.pinAssigned) sendPin();
+  }, [context?.error, context?.pinAssigned]);
+
+  useEffect(() => {
+    if (retryAfter <= 0) return undefined;
+    const timer = window.setInterval(() => {
+      setRetryAfter((current) => Math.max(0, current - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [retryAfter]);
+
+  const verifyPin = async (event) => {
+    event.preventDefault();
+    if (!/^\d{4}$/.test(pin)) {
+      setError('PIN mora imati to\u010dno 4 znamenke.');
+      return;
+    }
+
+    setVerifying(true);
+    setError('');
+    const { data, error: functionError } = await supabase.functions.invoke('verify-admissions-pin', {
+      body: { track: context?.track, pin },
+    });
+    setVerifying(false);
+
+    if (functionError || data?.error || !data?.verified) {
+      setError(await getEdgeFunctionErrorMessage(data, functionError, 'PIN nije ispravan.'));
+      setPin('');
+      return;
+    }
+
+    onVerified();
+  };
+
+  return (
+    <main className="auth-screen">
+      <form className="auth-panel pin-panel" onSubmit={verifyPin}>
+        <div className="auth-brand">
+          <School size={34} />
+          <span>ŠkoleHR</span>
+        </div>
+        <div className="auth-heading">
+          <h1>SMS potvrda prijave</h1>
+          <p>{section.productName}</p>
+        </div>
+        <div className="pin-explanation">
+          <ShieldAlert size={20} />
+          <p>
+            Unesite svoj trajni četveroznamenkasti PIN. Ako ste ga zaboravili,
+            isti PIN možete ponovno poslati na evidentirani broj
+            {maskedPhone ? ` ${maskedPhone}` : ' mobitela'}.
+          </p>
+        </div>
+        <label>
+          PIN
+          <input
+            className="pin-input"
+            value={pin}
+            onChange={(event) => setPin(event.target.value.replace(/\D/g, '').slice(0, 4))}
+            type="text"
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            placeholder="0000"
+            maxLength={4}
+            autoFocus
+            required
+          />
+        </label>
+        {message && <p className="login-notice">{message}</p>}
+        {error && <p className="error">{error}</p>}
+        <button className="primary" type="submit" disabled={verifying || sending || pin.length !== 4}>
+          {verifying ? <Loader2 className="spin" size={18} /> : <CheckCircle2 size={18} />}
+          <span>Potvrdi PIN</span>
+        </button>
+        <div className="pin-actions">
+          <button
+            className="auth-link"
+            type="button"
+            onClick={sendPin}
+            disabled={sending || retryAfter > 0}
+          >
+            {sending
+              ? 'Slanje...'
+              : retryAfter > 0
+                ? `Ponovno slanje za ${retryAfter} s`
+                : 'Pošalji novi PIN'}
+          </button>
+          <button className="auth-link" type="button" onClick={onCancel}>
+            Odustani i odjavi se
+          </button>
+        </div>
+      </form>
+    </main>
+  );
+}
+
+function PasswordRecovery({ section = APP_SECTIONS.ematica, onComplete }) {
+  const [password, setPassword] = useState('');
+  const [confirmation, setConfirmation] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const savePassword = async (event) => {
+    event.preventDefault();
+    setError('');
+
+    if (password.length < 8) {
+      setError('Lozinka mora imati najmanje 8 znakova.');
+      return;
+    }
+
+    if (password !== confirmation) {
+      setError('Lozinke se ne podudaraju.');
+      return;
+    }
+
+    setLoading(true);
+    const { error: updateError } = await supabase.auth.updateUser({ password });
+
+    if (updateError) {
+      setLoading(false);
+      setError(getAuthErrorMessage(updateError));
+      return;
+    }
+
+    await onComplete();
+  };
+
+  return (
+    <main className="auth-screen">
+      <form className="auth-panel" onSubmit={savePassword}>
+        <div className="auth-brand">
+          <School size={34} />
+          <span>ŠkoleHR</span>
+        </div>
+        <div className="auth-heading">
+          <h1>Nova lozinka</h1>
+          <p>{section.productName}</p>
+        </div>
+        <label>
+          Nova lozinka
+          <div className="password-input">
+            <input
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              type={showPassword ? 'text' : 'password'}
+              autoComplete="new-password"
+              required
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((current) => !current)}
+              title={showPassword ? 'Sakrij lozinku' : 'Prika\u017ei lozinku'}
+              aria-label={showPassword ? 'Sakrij lozinku' : 'Prika\u017ei lozinku'}
+            >
+              {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+            </button>
+          </div>
+        </label>
+        <label>
+          Ponovite novu lozinku
+          <input
+            value={confirmation}
+            onChange={(event) => setConfirmation(event.target.value)}
+            type={showPassword ? 'text' : 'password'}
+            autoComplete="new-password"
+            required
+          />
+        </label>
         {error && <p className="error">{error}</p>}
         <button className="primary" type="submit" disabled={loading}>
           {loading ? <Loader2 className="spin" size={18} /> : <CheckCircle2 size={18} />}
-          <span>Prijava</span>
+          <span>Spremi novu lozinku</span>
         </button>
       </form>
     </main>
@@ -1305,6 +1934,108 @@ function AccessLocked({ section = null }) {
         <p>{message}</p>
       </div>
     </Panel>
+  );
+}
+
+function StudentPins() {
+  const [state, setState] = useState({
+    loading: true,
+    error: '',
+    data: null,
+  });
+
+  const loadPins = async () => {
+    setState((current) => ({ ...current, loading: true, error: '' }));
+    const { data, error } = await supabase.functions.invoke('list-school-admission-pins');
+
+    if (error || data?.error) {
+      setState({
+        loading: false,
+        error: await getEdgeFunctionErrorMessage(data, error, 'PIN-ove nije moguće učitati.'),
+        data: null,
+      });
+      return;
+    }
+
+    setState({ loading: false, error: '', data });
+  };
+
+  useEffect(() => {
+    loadPins();
+  }, []);
+
+  const statusLabel = (value) => ({
+    READY: 'Spreman',
+    NOT_ACTIVATED: 'Čeka prvu prijavu',
+    NO_AUTH_ACCOUNT: 'Nema korisnički račun',
+    NO_PHONE: 'Nema broj mobitela',
+  }[value] ?? value ?? '-');
+
+  const formatDateTime = (value) => {
+    if (!value) return '-';
+    return new Intl.DateTimeFormat('hr-HR', {
+      dateStyle: 'short',
+      timeStyle: 'short',
+    }).format(new Date(value));
+  };
+
+  const students = state.data?.students ?? [];
+  const trackLabel = state.data?.track === 'SECONDARY'
+    ? 'Upis u srednju školu'
+    : state.data?.track === 'HIGHER_EDUCATION'
+      ? 'Upis na fakultet'
+      : 'Nema aktivnog upisnog modula';
+
+  return (
+    <div className="stack">
+      <Panel
+        title="Pinovi učenika"
+        action={<ReloadButton onClick={loadPins} loading={state.loading} />}
+      >
+        <div className="report-summary">
+          <Metric label="Škola" value={state.data?.school?.name ?? '-'} />
+          <Metric label="Školska godina" value={state.data?.school_year?.label ?? '-'} />
+          <Metric label="Upisni sustav" value={trackLabel} />
+          <Metric label="Broj učenika" value={students.length} />
+        </div>
+        <p className="notice">
+          Svaki učenik ima jedan trajni četveroznamenkasti PIN. Prikaz je automatski
+          ograničen na vašu školu, aktivnu školsku godinu i učenike koji imaju pravo
+          pristupa odgovarajućem sustavu e-Upisa.
+        </p>
+      </Panel>
+
+      <Panel title="PIN evidencija">
+        <DataState state={state}>
+          <Table
+            columns={[
+              'Učenik',
+              'Razred',
+              'Program',
+              'Korisničko ime',
+              'PIN',
+              'Mobitel',
+              'SMS poslan',
+              'Zadnja potvrda',
+              'Status',
+            ]}
+            rows={students.map((student) => [
+              student.full_name,
+              student.class_name,
+              student.program_name,
+              student.username || '-',
+              student.pin
+                ? <strong className="student-pin" key={`${student.registry_student_id}-pin`}>{student.pin}</strong>
+                : '-',
+              student.phone || '-',
+              formatDateTime(student.pin_delivered_at),
+              formatDateTime(student.last_verified_at),
+              statusLabel(student.status),
+            ])}
+          />
+        </DataState>
+      </Panel>
+    </div>
   );
 }
 

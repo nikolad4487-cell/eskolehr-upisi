@@ -872,9 +872,34 @@ select:focus {
   gap: 14px;
 }
 
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #153943;
+}
+
+.auth-brand span {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.auth-heading {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
 .auth-panel h1 {
-  margin: 0 0 6px;
+  margin: 0;
   font-size: 24px;
+}
+
+.auth-heading p {
+  margin: 0;
+  color: #64736f;
+  font-size: 14px;
+  line-height: 1.4;
 }
 
 .auth-panel label {
@@ -916,6 +941,176 @@ select:focus {
   padding: 0 10px 0 2px;
   color: #52625f;
   user-select: none;
+}
+
+.password-input {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  border: 1px solid #cad8dd;
+  border-radius: 7px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.password-input:focus-within {
+  outline: 2px solid #8bc4bc;
+  border-color: #1f6f75;
+}
+
+.password-input input {
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+}
+
+.password-input input:focus {
+  outline: 0;
+  border-color: transparent;
+}
+
+.password-input button {
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: #52625f;
+}
+
+.password-input button:hover {
+  color: #174f55;
+  background: #eef5f3;
+}
+
+.auth-link {
+  align-self: center;
+  border: 0;
+  padding: 4px 8px;
+  background: transparent;
+  color: #1f6870;
+  font-size: 14px;
+}
+
+.auth-link:hover {
+  text-decoration: underline;
+}
+
+.pin-panel {
+  width: min(440px, 100%);
+}
+
+.pin-explanation {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #d4dfdc;
+  border-radius: 8px;
+  background: #f5f9f7;
+  color: #40514d;
+}
+
+.pin-explanation svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: #1f6870;
+}
+
+.pin-explanation p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.pin-input {
+  min-height: 54px;
+  text-align: center;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pin-login-input {
+  text-align: center;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.phone-input {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  border: 1px solid #cad8dd;
+  border-radius: 7px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.phone-input:focus-within {
+  outline: 2px solid #8bc4bc;
+  border-color: #1f6f75;
+}
+
+.phone-input span {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  padding: 0 11px;
+  border-right: 1px solid #d8e1df;
+  background: #f3f7f6;
+  color: #314642;
+  font-weight: 700;
+}
+
+.phone-input input {
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+}
+
+.phone-input input:focus {
+  outline: 0;
+  border-color: transparent;
+}
+
+.auth-help {
+  margin: 0;
+  color: #60706c;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.pin-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pin-actions .auth-link {
+  align-self: auto;
+}
+
+.student-pin {
+  display: inline-block;
+  min-width: 58px;
+  padding: 4px 8px;
+  border: 1px solid #b9cfca;
+  border-radius: 6px;
+  background: #eef6f3;
+  color: #163f3b;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 16px;
+  letter-spacing: 2px;
+  text-align: center;
 }
 
 @keyframes spin {
