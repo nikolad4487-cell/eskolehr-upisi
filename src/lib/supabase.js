@@ -18,5 +18,11 @@ const hasRealAnonKey = Boolean(
 export const hasSupabaseConfig = hasRealSupabaseUrl && hasRealAnonKey;
 
 export const supabase = hasSupabaseConfig
-  ? createClient(supabaseUrl, supabaseAnonKey)
+  ? createClient(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+      },
+    })
   : null;

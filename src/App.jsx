@@ -96,6 +96,66 @@ const APP_SECTIONS = {
 };
 
 const APP_MODE = import.meta.env.VITE_APP_MODULE ?? 'all';
+const SESSION_PREFIX = `skolehr:${typeof window === 'undefined' ? 'server' : window.location.hostname}:${APP_MODE}`;
+const SESSION_KEYS = {
+  activePage: `${SESSION_PREFIX}:activePage`,
+  activeSection: `${SESSION_PREFIX}:activeSection`,
+  lastRoute: `${SESSION_PREFIX}:lastRoute`,
+  loadedUserId: `${SESSION_PREFIX}:loadedUserId`,
+  profile: `${SESSION_PREFIX}:profile`,
+  access: `${SESSION_PREFIX}:access`,
+  studentRecord: `${SESSION_PREFIX}:studentRecord`,
+};
+
+function readSessionValue(key, fallback = null) {
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const value = window.sessionStorage.getItem(key);
+    return value === null ? fallback : JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function writeSessionValue(key, value) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (value === null || value === undefined) {
+      window.sessionStorage.removeItem(key);
+    } else {
+      window.sessionStorage.setItem(key, JSON.stringify(value));
+    }
+  } catch {
+    // The application remains usable when storage is unavailable.
+  }
+}
+
+function clearUserSessionCache() {
+  Object.values(SESSION_KEYS)
+    .filter((key) => ![SESSION_KEYS.activePage, SESSION_KEYS.activeSection, SESSION_KEYS.lastRoute].includes(key))
+    .forEach((key) => window.sessionStorage.removeItem(key));
+}
+
+function useSessionState(key, fallback = '') {
+  const [value, setValue] = useState(() => readSessionValue(key, fallback));
+  useEffect(() => {
+    writeSessionValue(key, value);
+  }, [key, value]);
+  return [value, setValue];
+}
+
+function withTimeout(promise, label, timeoutMs = 12000) {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = window.setTimeout(
+      () => reject(new Error(`${label} nije dovršen na vrijeme.`)),
+      timeoutMs
+    );
+  });
+
+  return Promise.race([Promise.resolve(promise), timeout])
+    .finally(() => window.clearTimeout(timeoutId));
+}
 
 function appAllowsSection(sectionId) {
   if (APP_MODE === 'ematica') return sectionId === APP_SECTIONS.ematica.id;
@@ -318,14 +378,19 @@ function getDeniedLoginMessage(section, isStudent) {
 }
 
 function App() {
-  const [activePage, setActivePage] = useState('dashboard');
-  const [activeSection, setActiveSection] = useState(() => getPreferredSectionFromHost());
+  const [activePage, setActivePage] = useSessionState(SESSION_KEYS.activePage, 'dashboard');
+  const [activeSection, setActiveSection] = useSessionState(
+    SESSION_KEYS.activeSection,
+    getPreferredSectionFromHost()
+  );
   const [session, setSession] = useState(null);
-  const [profile, setProfile] = useState(null);
-  const [access, setAccess] = useState(null);
-  const [studentRecord, setStudentRecord] = useState(null);
+  const [profile, setProfile] = useState(() => readSessionValue(SESSION_KEYS.profile, null));
+  const [access, setAccess] = useState(() => readSessionValue(SESSION_KEYS.access, null));
+  const [studentRecord, setStudentRecord] = useState(() => readSessionValue(SESSION_KEYS.studentRecord, null));
   const [studentRecordLoading, setStudentRecordLoading] = useState(false);
-  const [studentRecordChecked, setStudentRecordChecked] = useState(false);
+  const [studentRecordChecked, setStudentRecordChecked] = useState(
+    () => Boolean(readSessionValue(SESSION_KEYS.studentRecord, null))
+  );
   const [profileLoading, setProfileLoading] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
   const [authNotice, setAuthNotice] = useState('');
@@ -333,6 +398,9 @@ function App() {
   const [admissionsPinVerified, setAdmissionsPinVerified] = useState(false);
   const [admissionsPinContext, setAdmissionsPinContext] = useState(null);
   const pinVerificationStarted = useRef('');
+  const currentUserIdRef = useRef('');
+  const loadedUserIdRef = useRef(readSessionValue(SESSION_KEYS.loadedUserId, ''));
+  const cachedStudentRecordRef = useRef(Boolean(readSessionValue(SESSION_KEYS.studentRecord, null)));
   const [passwordRecovery, setPasswordRecovery] = useState(() => {
     if (typeof window === 'undefined') return false;
     return window.location.hash.includes('type=recovery')
@@ -340,24 +408,119 @@ function App() {
   });
 
   useEffect(() => {
+    const handleVisibilityChange = () => {
+      console.log('VISIBILITY CHANGE', document.visibilityState);
+    };
+    const handleWindowFocus = () => {
+      console.log('WINDOW FOCUS');
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleWindowFocus);
+
+    const lastRoute = readSessionValue(SESSION_KEYS.lastRoute, '');
+    if (lastRoute && lastRoute !== `${window.location.pathname}${window.location.search}`) {
+      window.history.replaceState(window.history.state, '', lastRoute);
+    }
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleWindowFocus);
+    };
+  }, []);
+
+  useEffect(() => {
+    writeSessionValue(SESSION_KEYS.lastRoute, `${window.location.pathname}${window.location.search}`);
+  }, [activePage, activeSection]);
+
+  useEffect(() => {
     if (!hasSupabaseConfig) {
       setAuthLoading(false);
       return;
     }
 
-    supabase.auth.getSession().then(({ data }) => {
-      setProfileLoading(Boolean(data.session?.user?.id));
-      setStudentRecordChecked(false);
-      setSession(data.session);
-      setAuthLoading(false);
-    });
+    const initializeSession = async () => {
+      try {
+        const { data, error } = await withTimeout(
+          supabase.auth.getSession(),
+          'Provjera prijave'
+        );
+        if (error) console.warn('[AUTH] Initial session check failed', error.message);
+
+        const nextSession = data.session ?? null;
+        const nextUserId = nextSession?.user?.id ?? '';
+        const hasCachedUser = Boolean(nextUserId && loadedUserIdRef.current === nextUserId && profile);
+
+        if (nextUserId && loadedUserIdRef.current && loadedUserIdRef.current !== nextUserId) {
+          loadedUserIdRef.current = '';
+          cachedStudentRecordRef.current = false;
+          clearUserSessionCache();
+          setProfile(null);
+          setAccess(null);
+          setStudentRecord(null);
+        }
+
+        currentUserIdRef.current = nextUserId;
+        setProfileLoading(Boolean(nextUserId) && !hasCachedUser);
+        if (!hasCachedUser) setStudentRecordChecked(false);
+        setSession(nextSession);
+      } catch (error) {
+        console.warn('[AUTH] Initial session check failed', error);
+        setSession(null);
+        setProfileLoading(false);
+      } finally {
+        setAuthLoading(false);
+      }
+    };
+
+    initializeSession();
 
     const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      console.log('[AUTH] Auth Event:', event);
       if (event === 'PASSWORD_RECOVERY') {
         setPasswordRecovery(true);
       }
-      setProfileLoading(Boolean(nextSession?.user?.id));
-      setStudentRecordChecked(false);
+
+      const nextUserId = nextSession?.user?.id ?? '';
+      const isSameUser = Boolean(nextUserId && currentUserIdRef.current === nextUserId);
+      const isLoadedUser = Boolean(nextUserId && loadedUserIdRef.current === nextUserId);
+
+      if (event === 'TOKEN_REFRESHED') {
+        currentUserIdRef.current = nextUserId;
+        setSession(nextSession);
+        return;
+      }
+
+      if (event === 'SIGNED_IN' && isSameUser && isLoadedUser) {
+        setSession(nextSession);
+        return;
+      }
+
+      if (event === 'SIGNED_OUT' || !nextUserId) {
+        currentUserIdRef.current = '';
+        loadedUserIdRef.current = '';
+        clearUserSessionCache();
+        setProfile(null);
+        setAccess(null);
+        setStudentRecord(null);
+        setStudentRecordChecked(false);
+        setProfileLoading(false);
+        setSession(null);
+        return;
+      }
+
+      if (loadedUserIdRef.current && loadedUserIdRef.current !== nextUserId) {
+        loadedUserIdRef.current = '';
+        cachedStudentRecordRef.current = false;
+        clearUserSessionCache();
+        setProfile(null);
+        setAccess(null);
+        setStudentRecord(null);
+      }
+
+      currentUserIdRef.current = nextUserId;
+      setProfileLoading(!isLoadedUser);
+      if (!isLoadedUser) setStudentRecordChecked(false);
       setSession(nextSession);
     });
 
@@ -373,26 +536,49 @@ function App() {
         return;
       }
 
-      setProfileLoading(true);
-      const { data, error } = await supabase
-        .from('user_profiles')
-        .select('*')
-        .eq('auth_user_id', session.user.id)
-        .maybeSingle();
-
-      setProfile(error ? null : data);
-
-      if (data?.auth_user_id) {
-        const { data: accessData } = await supabase
-          .from('v_ematica_user_access')
-          .select('*')
-          .eq('auth_user_id', session.user.id)
-          .maybeSingle();
-        setAccess(accessData ?? null);
-      } else {
-        setAccess(null);
+      if (loadedUserIdRef.current === session.user.id && profile) {
+        setProfileLoading(false);
+        return;
       }
-      setProfileLoading(false);
+
+      setProfileLoading(true);
+      try {
+        const { data, error } = await withTimeout(
+          supabase
+            .from('user_profiles')
+            .select('*')
+            .eq('auth_user_id', session.user.id)
+            .maybeSingle(),
+          'Učitavanje korisničkog profila'
+        );
+
+        const nextProfile = error ? null : data;
+        setProfile(nextProfile);
+        writeSessionValue(SESSION_KEYS.profile, nextProfile);
+
+        if (data?.auth_user_id) {
+          const { data: accessData } = await withTimeout(
+            supabase
+              .from('v_ematica_user_access')
+              .select('*')
+              .eq('auth_user_id', session.user.id)
+              .maybeSingle(),
+            'Učitavanje korisničkih ovlasti'
+          );
+          const nextAccess = accessData ?? null;
+          setAccess(nextAccess);
+          writeSessionValue(SESSION_KEYS.access, nextAccess);
+        } else {
+          setAccess(null);
+          writeSessionValue(SESSION_KEYS.access, null);
+        }
+        loadedUserIdRef.current = session.user.id;
+        writeSessionValue(SESSION_KEYS.loadedUserId, session.user.id);
+      } catch (error) {
+        console.warn('[AUTH] Profile loading failed', error);
+      } finally {
+        setProfileLoading(false);
+      }
     };
 
     loadProfile();
@@ -415,29 +601,49 @@ function App() {
         return;
       }
 
+      if (cachedStudentRecordRef.current && loadedUserIdRef.current === session.user.id && studentRecord) {
+        cachedStudentRecordRef.current = false;
+        setStudentRecordLoading(false);
+        setStudentRecordChecked(true);
+        return;
+      }
+
       setStudentRecordChecked(false);
       setStudentRecordLoading(true);
-      let result = null;
+      try {
+        let result = null;
 
-      if (profile?.id) {
-        result = await supabase
-          .from('v_ematica_students_current')
-          .select('*')
-          .eq('ednevnik_student_id', profile.id)
-          .maybeSingle();
+        if (profile?.id) {
+          result = await withTimeout(
+            supabase
+              .from('v_ematica_students_current')
+              .select('*')
+              .eq('ednevnik_student_id', profile.id)
+              .maybeSingle(),
+            'Učitavanje podataka učenika'
+          );
+        }
+
+        if ((!result || (!result.data && !result.error)) && session?.user?.email) {
+          result = await withTimeout(
+            supabase
+              .from('v_ematica_students_current')
+              .select('*')
+              .eq('email', session.user.email)
+              .maybeSingle(),
+            'Učitavanje podataka učenika'
+          );
+        }
+
+        const nextStudentRecord = result?.data ?? null;
+        setStudentRecord(nextStudentRecord);
+        writeSessionValue(SESSION_KEYS.studentRecord, nextStudentRecord);
+      } catch (error) {
+        console.warn('[AUTH] Student record loading failed', error);
+      } finally {
+        setStudentRecordLoading(false);
+        setStudentRecordChecked(true);
       }
-
-      if ((!result || (!result.data && !result.error)) && session?.user?.email) {
-        result = await supabase
-          .from('v_ematica_students_current')
-          .select('*')
-          .eq('email', session.user.email)
-          .maybeSingle();
-      }
-
-      setStudentRecord(result?.data ?? null);
-      setStudentRecordLoading(false);
-      setStudentRecordChecked(true);
     };
 
     loadStudentRecord();
@@ -2069,7 +2275,10 @@ function YearEndCertificates({ scopeProfile = null, isAdmin = true }) {
     if (activeSchoolId) query = query.eq('school_id', activeSchoolId);
     return query;
   }, [activeSchoolId]);
-  const [selectedClassId, setSelectedClassId] = useState('');
+  const [selectedClassId, setSelectedClassId] = useSessionState(
+    `${SESSION_PREFIX}:certificates:selectedClassId`,
+    ''
+  );
   const [selectedSummary, setSelectedSummary] = useState(null);
   const [documentPreview, setDocumentPreview] = useState(null);
   const [subjectNameMap, setSubjectNameMap] = useState({});
@@ -2605,7 +2814,10 @@ function AccessManagement() {
     email: '',
     password: '',
   });
-  const [selectedSchoolId, setSelectedSchoolId] = useState('');
+  const [selectedSchoolId, setSelectedSchoolId] = useSessionState(
+    `${SESSION_PREFIX}:access:selectedSchoolId`,
+    ''
+  );
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
   const selectedSchool = schools.data.find((school) => school.id === selectedSchoolId) ?? null;
@@ -3515,7 +3727,10 @@ function Students({ scopeProfile = null, isAdmin = true }) {
     [isAdmin, scopeProfile?.id]
   );
   const [form, setForm] = useState({ first_name: '', last_name: '', oib: '', email: '' });
-  const [selectedStudentId, setSelectedStudentId] = useState('');
+  const [selectedStudentId, setSelectedStudentId] = useSessionState(
+    `${SESSION_PREFIX}:students:selectedStudentId`,
+    ''
+  );
   const [message, setMessage] = useState('');
   const filtered = useMemo(() => {
     const value = query.toLowerCase();
