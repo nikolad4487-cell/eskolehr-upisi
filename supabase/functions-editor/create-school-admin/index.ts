@@ -179,137 +179,137 @@ export async function decryptPin(value: string) {
   return new TextDecoder().decode(decrypted);
 }
 
+function normalizeEmail(value: string) {
+  const email = value.trim().toLowerCase();
+  return email.includes('@') ? email : `${email}@eskole.me`;
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+  if (req.method !== 'POST') return jsonResponse({ error: 'Method not allowed.' }, 405);
+
+  let createdAuthUserId = '';
 
   try {
     const { admin, user } = await getAuthenticatedUser(req);
+    const body = await req.json();
+    const schoolId = String(body.school_id ?? '').trim();
+    const email = normalizeEmail(String(body.email ?? ''));
+    const password = String(body.password ?? '');
+    const firstName = String(body.first_name ?? '').trim();
+    const lastName = String(body.last_name ?? '').trim();
+    const fullName = `${firstName} ${lastName}`.trim();
 
-    const { data: profile, error: profileError } = await admin
+    if (!schoolId || !firstName || !lastName || !email) {
+      return jsonResponse({ error: 'Škola, ime, prezime i e-mail su obvezni.' }, 400);
+    }
+    if (password.length < 8) {
+      return jsonResponse({ error: 'Lozinka mora imati najmanje 8 znakova.' }, 400);
+    }
+
+    const { data: caller, error: callerError } = await admin
       .from('user_profiles')
-      .select('id, access_role, active_school_id')
+      .select('id, access_role')
       .eq('auth_user_id', user.id)
       .maybeSingle();
 
-    const role = String(profile?.access_role ?? '').toLowerCase();
     if (
-      profileError
-      || !profile?.active_school_id
-      || !['school_admin', 'admin', 'administrator', 'ravnatelj', 'strucna_sluzba'].includes(role)
+      callerError
+      || !caller
+      || !['super_admin', 'main_admin'].includes(String(caller.access_role ?? '').toLowerCase())
     ) {
-      return jsonResponse({ error: 'Samo administrator škole može pregledavati PIN-ove.' }, 403);
+      return jsonResponse({ error: 'Samo glavni administrator može dodati administratora škole.' }, 403);
     }
 
     const { data: school, error: schoolError } = await admin
       .from('schools')
-      .select('id, name, education_level')
-      .eq('id', profile.active_school_id)
+      .select('id, name')
+      .eq('id', schoolId)
       .maybeSingle();
 
-    if (schoolError || !school) throw new Error('Aktivna škola nije pronađena.');
+    if (schoolError || !school) return jsonResponse({ error: 'Škola nije pronađena.' }, 404);
 
-    const { data: activeYear, error: yearError } = await admin
-      .from('school_years')
-      .select('id, label')
-      .eq('is_active', true)
+    const { data: existingAdmin } = await admin
+      .from('user_profiles')
+      .select('id, email')
+      .eq('active_school_id', schoolId)
+      .eq('access_role', 'school_admin')
+      .limit(1)
       .maybeSingle();
 
-    if (yearError || !activeYear) throw new Error('Aktivna školska godina nije postavljena.');
-
-    const viewName = school.education_level === 'ELEMENTARY'
-      ? 'v_admissions_secondary_eligible'
-      : school.education_level === 'SECONDARY'
-        ? 'v_admissions_higher_eligible'
-        : null;
-
-    if (!viewName) {
+    if (existingAdmin) {
       return jsonResponse({
-        school,
-        school_year: activeYear,
-        track: null,
-        students: [],
-      });
+        error: `Škola već ima glavnog administratora (${existingAdmin.email}).`,
+      }, 409);
     }
 
-    const track = school.education_level === 'ELEMENTARY'
-      ? 'SECONDARY'
-      : 'HIGHER_EDUCATION';
-
-    const { data: students, error: studentsError } = await admin
-      .from(viewName)
-      .select('registry_student_id, ednevnik_student_id, full_name, email, phone, class_name, grade_level, program_name')
-      .eq('school_id', school.id)
-      .eq('school_year_id', activeYear.id)
-      .order('last_name')
-      .order('first_name');
-
-    if (studentsError) throw studentsError;
-
-    const profileIds = (students ?? [])
-      .map((student) => student.ednevnik_student_id)
-      .filter(Boolean);
-    const studentIds = (students ?? []).map((student) => student.registry_student_id);
-
-    const [{ data: linkedProfiles }, { data: existingAccounts }] = await Promise.all([
-      profileIds.length
-        ? admin
-          .from('user_profiles')
-          .select('id, auth_user_id, email')
-          .in('id', profileIds)
-        : Promise.resolve({ data: [] }),
-      studentIds.length
-        ? admin
-          .from('admission_login_accounts')
-          .select('*')
-          .in('registry_student_id', studentIds)
-        : Promise.resolve({ data: [] }),
-    ]);
-
-    const profilesById = new Map((linkedProfiles ?? []).map((item) => [item.id, item]));
-    const accountsByStudent = new Map(
-      (existingAccounts ?? []).map((item) => [item.registry_student_id, item]),
-    );
-    const result = [];
-
-    for (const student of students ?? []) {
-      const linkedProfile = profilesById.get(student.ednevnik_student_id);
-      const account = accountsByStudent.get(student.registry_student_id);
-      const phone = normalizePhone(String(account?.phone ?? ''));
-      let pin: string | null = null;
-      let accountStatus = account?.encrypted_pin ? 'READY' : 'NOT_ACTIVATED';
-
-      if (!linkedProfile?.auth_user_id) {
-        accountStatus = 'NO_AUTH_ACCOUNT';
-      } else if (account?.encrypted_pin) {
-        pin = await decryptPin(account.encrypted_pin);
-      }
-
-      result.push({
-        registry_student_id: student.registry_student_id,
-        full_name: student.full_name,
-        class_name: student.class_name,
-        grade_level: student.grade_level,
-        program_name: student.program_name,
-        username: account?.username
-          ?? String(student.email ?? linkedProfile?.email ?? '').split('@')[0].toLowerCase(),
-        pin,
-        phone: phone ? maskPhone(phone) : null,
-        pin_generated_at: account?.pin_generated_at ?? null,
-        pin_delivered_at: account?.pin_delivered_at ?? null,
-        last_verified_at: account?.last_verified_at ?? null,
-        status: accountStatus,
-      });
-    }
-
-    return jsonResponse({
-      school,
-      school_year: activeYear,
-      track,
-      students: result,
+    const { data: authData, error: authError } = await admin.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+      user_metadata: {
+        name: fullName,
+        first_name: firstName,
+        last_name: lastName,
+      },
     });
-  } catch (error) {
+
+    if (authError || !authData.user) {
+      throw new Error(authError?.message ?? 'Auth račun nije moguće stvoriti.');
+    }
+    createdAuthUserId = authData.user.id;
+
+    const { data: profile, error: profileError } = await admin
+      .from('user_profiles')
+      .insert({
+        auth_user_id: authData.user.id,
+        email,
+        name: fullName,
+        access_role: 'school_admin',
+        active_school_id: schoolId,
+        is_first_login: true,
+        requires_password_change: true,
+      })
+      .select('id, email, name, access_role, active_school_id')
+      .single();
+
+    if (profileError || !profile) {
+      throw new Error(profileError?.message ?? 'Korisnički profil nije moguće stvoriti.');
+    }
+
+    const { error: schoolRoleError } = await admin
+      .from('user_school_roles')
+      .upsert({
+        user_id: profile.id,
+        school_id: schoolId,
+        role: 'SCHOOL_ADMIN',
+        status: 'ACTIVE',
+      }, {
+        onConflict: 'user_id,school_id,role',
+      });
+
+    if (schoolRoleError) {
+      await admin.from('user_profiles').delete().eq('id', profile.id);
+      throw new Error(schoolRoleError.message);
+    }
+
     return jsonResponse({
-      error: error instanceof Error ? error.message : 'PIN-ove nije moguće učitati.',
+      message: `Administrator škole ${school.name} je stvoren.`,
+      profile,
+      school,
+    }, 201);
+  } catch (error) {
+    if (createdAuthUserId) {
+      try {
+        const { admin } = await getAuthenticatedUser(req);
+        await admin.auth.admin.deleteUser(createdAuthUserId);
+      } catch {
+        // Preserve the original error.
+      }
+    }
+
+    return jsonResponse({
+      error: error instanceof Error ? error.message : 'Administratora škole nije moguće stvoriti.',
     }, 400);
   }
 });

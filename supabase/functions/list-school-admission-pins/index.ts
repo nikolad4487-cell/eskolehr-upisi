@@ -23,7 +23,7 @@ Deno.serve(async (req) => {
     if (
       profileError
       || !profile?.active_school_id
-      || !['admin', 'administrator', 'ravnatelj', 'strucna_sluzba'].includes(role)
+      || !['school_admin', 'admin', 'administrator', 'ravnatelj', 'strucna_sluzba'].includes(role)
     ) {
       return jsonResponse({ error: 'Samo administrator škole može pregledavati PIN-ove.' }, 403);
     }

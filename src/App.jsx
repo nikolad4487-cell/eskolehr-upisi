@@ -40,7 +40,7 @@ const EMATICA_NAV_ITEMS = [
   { id: 'sync', label: 'Sinkronizacija e-Dnevnik', icon: Database },
   { id: 'certificates', label: 'Zaključivanje i svjedodžbe', icon: FileText },
   { id: 'reports', label: 'Izvještaji', icon: ClipboardList },
-  { id: 'access', label: 'Pristupi', icon: ShieldAlert },
+  { id: 'access', label: 'Administratori škola', icon: ShieldAlert },
 ];
 
 const HOMEROOM_NAV_ITEMS = [
@@ -212,8 +212,19 @@ function isAdminProfile(profile, access) {
   if (access?.is_admin) return true;
   if (!profile) return false;
   const normalized = normalizedProfileText(profile);
-  if (normalized.includes('admin') || normalized.includes('administrator') || normalized.includes('ravnatelj') || normalized.includes('strucna_sluzba')) return true;
-  return !isStudentProfile(profile) && !isTeacherProfile(profile, access);
+  return normalized.includes('super_admin')
+    || normalized.includes('main_admin')
+    || normalized.includes('school_admin')
+    || normalized.includes('admin')
+    || normalized.includes('administrator')
+    || normalized.includes('ravnatelj')
+    || normalized.includes('strucna_sluzba');
+}
+
+function isSuperAdminProfile(profile, access) {
+  if (access?.is_super_admin) return true;
+  const role = String(profile?.access_role ?? '').toLowerCase();
+  return role === 'super_admin' || role === 'main_admin';
 }
 
 function normalizedProfileText(profile) {
@@ -390,6 +401,7 @@ function App() {
   const isStudent = access?.is_student || isStudentProfile(profile);
   const isTeacher = isTeacherProfile(profile, access);
   const isAdmin = isAdminProfile(profile, access);
+  const isSuperAdmin = isSuperAdminProfile(profile, access);
   const isHomeroomTeacher = Boolean(access?.is_homeroom_teacher);
   const forcedSection = getForcedSectionFromHost();
   const activeSchoolLevel = getActiveSchoolLevel(profile, access, studentRecord);
@@ -473,7 +485,7 @@ function App() {
   const adminScope = {
     schoolId: access?.active_school_id ?? profile?.active_school_id ?? '',
     schoolName: access?.active_school_name ?? '',
-    isScoped: Boolean(access?.active_school_id ?? profile?.active_school_id),
+    isScoped: !isSuperAdmin && Boolean(access?.active_school_id ?? profile?.active_school_id),
   };
 
   useEffect(() => {
@@ -641,8 +653,11 @@ function App() {
   }, [activeSection, availableSections]);
 
   const admissionsNavItems = isStudent ? STUDENT_NAV_ITEMS : TEACHER_ADMISSIONS_NAV_ITEMS;
+  const adminNavItems = isSuperAdmin
+    ? EMATICA_NAV_ITEMS
+    : EMATICA_NAV_ITEMS.filter((item) => item.id !== 'access');
   const navItems = activeSection === APP_SECTIONS.ematica.id
-    ? (canUseEmaticaInApp ? (isAdmin ? EMATICA_NAV_ITEMS : HOMEROOM_NAV_ITEMS) : LOCKED_NAV_ITEMS)
+    ? (canUseEmaticaInApp ? (isAdmin ? adminNavItems : HOMEROOM_NAV_ITEMS) : LOCKED_NAV_ITEMS)
     : (canUseActiveAdmissionsSection ? admissionsNavItems : LOCKED_NAV_ITEMS);
 
   useEffect(() => {
@@ -803,7 +818,7 @@ function App() {
           {activeSection === APP_SECTIONS.ematica.id && canUseEmaticaInApp && activePage === 'sync' && <EdnevnikSync />}
           {activeSection === APP_SECTIONS.ematica.id && canUseEmaticaInApp && activePage === 'certificates' && <YearEndCertificates scopeProfile={profile} isAdmin={isAdmin} />}
           {activeSection === APP_SECTIONS.ematica.id && canUseEmaticaInApp && isAdmin && activePage === 'reports' && <Reports />}
-          {activeSection === APP_SECTIONS.ematica.id && canUseEmaticaInApp && isAdmin && activePage === 'access' && <AccessManagement />}
+          {activeSection === APP_SECTIONS.ematica.id && canUseEmaticaInApp && isSuperAdmin && activePage === 'access' && <AccessManagement />}
 
           {activeSection !== APP_SECTIONS.ematica.id && canUseActiveAdmissionsSection && activePage === 'dashboard' && (
             <AdmissionsHome
@@ -2574,11 +2589,25 @@ function getReportConfig(type, sources) {
 }
 
 function AccessManagement() {
-  const profiles = useSupabaseQuery(() => supabase.from('user_profiles').select('*').order('email'), []);
+  const profiles = useSupabaseQuery(
+    () => supabase
+      .from('user_profiles')
+      .select('*')
+      .in('access_role', ['school_admin', 'admin', 'administrator'])
+      .order('email'),
+    []
+  );
   const schools = useSupabaseQuery(() => supabase.from('schools').select('id,name,education_level').order('name'), []);
-  const [profileForm, setProfileForm] = useState({ profile_id: '', access_role: '', active_school_id: '' });
+  const [form, setForm] = useState({
+    school_id: '',
+    first_name: '',
+    last_name: '',
+    email: '',
+    password: '',
+  });
   const [selectedSchoolId, setSelectedSchoolId] = useState('');
   const [message, setMessage] = useState('');
+  const [saving, setSaving] = useState(false);
   const selectedSchool = schools.data.find((school) => school.id === selectedSchoolId) ?? null;
   const schoolProfiles = useMemo(() => {
     const rows = selectedSchoolId
@@ -2587,33 +2616,30 @@ function AccessManagement() {
     return [...rows].sort(compareProfilesByLastName);
   }, [profiles.data, selectedSchoolId]);
 
-  const groupedProfiles = {
-    admin: schoolProfiles.filter((profile) => profile.access_role === 'admin'),
-    teacher: schoolProfiles.filter((profile) => profile.access_role === 'teacher'),
-    student: schoolProfiles.filter((profile) => profile.access_role === 'student'),
-    unset: schoolProfiles.filter((profile) => !['admin', 'teacher', 'student'].includes(profile.access_role)),
-  };
-
-  const saveProfileAccess = async (event) => {
+  const createSchoolAdmin = async (event) => {
     event.preventDefault();
     setMessage('');
-    const { error } = await supabase
-      .from('user_profiles')
-      .update({
-        access_role: profileForm.access_role || null,
-        active_school_id: profileForm.active_school_id || null,
-      })
-      .eq('id', profileForm.profile_id);
+    setSaving(true);
+    const { data, error } = await supabase.functions.invoke('create-school-admin', {
+      body: form,
+    });
 
-    setMessage(error ? error.message : 'Pristup korisnika je spremljen.');
-    if (!error) {
-      setProfileForm({ profile_id: '', access_role: '', active_school_id: '' });
+    if (error || data?.error) {
+      setMessage(await getEdgeFunctionErrorMessage(
+        data,
+        error,
+        'Administratora škole nije moguće stvoriti.'
+      ));
+    } else {
+      setMessage(data?.message ?? 'Administrator škole je stvoren.');
+      setForm({ school_id: '', first_name: '', last_name: '', email: '', password: '' });
       profiles.reload();
     }
+    setSaving(false);
   };
 
   const clearProfileAccess = async (profile) => {
-    const confirmed = window.confirm(`Ukloniti ulogu i aktivnu školu za korisnika ${getProfileDisplayName(profile)}?`);
+    const confirmed = window.confirm(`Ukloniti administratorske ovlasti korisniku ${getProfileDisplayName(profile)}?`);
     if (!confirmed) return;
 
     setMessage('');
@@ -2622,44 +2648,50 @@ function AccessManagement() {
       .update({ access_role: null, active_school_id: null })
       .eq('id', profile.id);
 
-    setMessage(error ? error.message : 'Pristup korisnika je uklonjen.');
-    if (!error) profiles.reload();
-  };
-
-  const deleteProfile = async (profile) => {
-    const confirmed = window.confirm(`Obrisati profil korisnika ${getProfileDisplayName(profile)}? Ovo ne briše Supabase Auth račun.`);
-    if (!confirmed) return;
-
-    setMessage('');
-    const { error } = await supabase.from('user_profiles').delete().eq('id', profile.id);
-    setMessage(error ? error.message : 'Korisnički profil je obrisan.');
-    if (!error) profiles.reload();
+    if (!error) {
+      await supabase
+        .from('user_school_roles')
+        .delete()
+        .eq('user_id', profile.id)
+        .eq('role', 'SCHOOL_ADMIN');
+      profiles.reload();
+    }
+    setMessage(error ? error.message : 'Administratorske ovlasti su uklonjene.');
   };
 
   return (
     <div className="stack">
-      <Panel title="Uloge korisnika">
-        <form className="inline-form compact" onSubmit={saveProfileAccess}>
-          <select value={profileForm.profile_id} onChange={(e) => setProfileForm({ ...profileForm, profile_id: e.target.value })} required>
-            <option value="">Korisnik</option>
-            {[...profiles.data].sort(compareProfilesByLastName).map((profile) => <option key={profile.id} value={profile.id}>{getProfileDisplayName(profile)}</option>)}
-          </select>
-          <select value={profileForm.access_role} onChange={(e) => setProfileForm({ ...profileForm, access_role: e.target.value })} required>
-            <option value="">Uloga</option>
-            <option value="admin">Admin</option>
-            <option value="teacher">Nastavnik</option>
-            <option value="student">Učenik</option>
-          </select>
-          <select value={profileForm.active_school_id} onChange={(e) => setProfileForm({ ...profileForm, active_school_id: e.target.value })}>
-            <option value="">Aktivna škola</option>
+      <Panel title="Novi glavni administrator škole">
+        <form className="inline-form compact" onSubmit={createSchoolAdmin}>
+          <select value={form.school_id} onChange={(e) => setForm({ ...form, school_id: e.target.value })} required>
+            <option value="">Odaberi školu</option>
             {schools.data.map((school) => <option key={school.id} value={school.id}>{school.name}</option>)}
           </select>
-          <button className="primary" type="submit"><CheckCircle2 size={18} /><span>Spremi</span></button>
+          <input placeholder="Ime" value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} required />
+          <input placeholder="Prezime" value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} required />
+          <input
+            placeholder="korisnicko.ime ili e-mail"
+            value={form.email}
+            onChange={(e) => setForm({ ...form, email: e.target.value })}
+            required
+          />
+          <input
+            type="password"
+            minLength={8}
+            placeholder="Početna lozinka"
+            value={form.password}
+            onChange={(e) => setForm({ ...form, password: e.target.value })}
+            required
+          />
+          <button className="primary" type="submit" disabled={saving}>
+            <UserPlus size={18} />
+            <span>{saving ? 'Stvaranje...' : 'Stvori administratora'}</span>
+          </button>
         </form>
         {message && <p className="notice">{message}</p>}
       </Panel>
 
-      <Panel title="Prikaz korisnika po školi">
+      <Panel title="Administratori po školi">
         <div className="inline-form compact">
           <select value={selectedSchoolId} onChange={(e) => setSelectedSchoolId(e.target.value)}>
             <option value="">Sve škole</option>
@@ -2676,28 +2708,23 @@ function AccessManagement() {
         </div>
       </Panel>
 
-      <div className="split-grid">
-        <RoleUsersPanel title="Admini" profiles={groupedProfiles.admin} schools={schools.data} onClearAccess={clearProfileAccess} onDelete={deleteProfile} />
-        <RoleUsersPanel title="Nastavnici" profiles={groupedProfiles.teacher} schools={schools.data} onClearAccess={clearProfileAccess} onDelete={deleteProfile} />
-        <RoleUsersPanel title="Učenici" profiles={groupedProfiles.student} schools={schools.data} onClearAccess={clearProfileAccess} onDelete={deleteProfile} />
-        <RoleUsersPanel title="Bez uloge" profiles={groupedProfiles.unset} schools={schools.data} onClearAccess={clearProfileAccess} onDelete={deleteProfile} />
-      </div>
+      <RoleUsersPanel title="Glavni administratori škola" profiles={schoolProfiles} schools={schools.data} onClearAccess={clearProfileAccess} />
     </div>
   );
 }
 
-function RoleUsersPanel({ title, profiles, schools, onClearAccess, onDelete }) {
+function RoleUsersPanel({ title, profiles, schools, onClearAccess }) {
   return (
     <Panel title={`${title} (${profiles.length})`}>
       <Table
-        columns={['Prezime i ime', 'E-mail', 'Aktivna škola', 'Akcije']}
+        columns={['Prezime i ime', 'E-mail', 'Škola', 'Uloga', 'Akcije']}
         rows={profiles.map((profile) => [
           getProfileDisplayName(profile),
           profile.email ?? '-',
           schools.find((school) => school.id === profile.active_school_id)?.name ?? '-',
+          profile.access_role === 'school_admin' ? 'Glavni administrator škole' : profile.access_role,
           <div className="row-actions" key={`${profile.id}-actions`}>
-            <button className="small-button" type="button" onClick={() => onClearAccess(profile)}>Ukloni pristup</button>
-            <button className="small-button danger" type="button" onClick={() => onDelete(profile)}>Obriši profil</button>
+            <button className="small-button danger" type="button" onClick={() => onClearAccess(profile)}>Ukloni ovlasti</button>
           </div>,
         ])}
       />

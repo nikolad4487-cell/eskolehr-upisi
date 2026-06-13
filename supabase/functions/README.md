@@ -50,3 +50,15 @@ supabase/migrations/026_admissions_sms_pin_security.sql
 supabase/migrations/027_convert_admissions_pin_to_permanent.sql
 supabase/migrations/028_first_login_phone_activation.sql
 ```
+## Administratori škola
+
+Funkcija `create-school-admin` smije se pozvati samo iz računa čiji je
+`user_profiles.access_role = 'super_admin'`. Ona stvara Supabase Auth račun,
+profil i vezu `SCHOOL_ADMIN` za odabranu školu.
+
+Prije uporabe:
+
+1. Pokrenite migraciju `029_super_admin_school_admin_hierarchy.sql`.
+2. Jednom ručno postavite postojeći račun kao `super_admin` SQL naredbom
+   navedenom na kraju migracije.
+3. Deployajte funkciju `create-school-admin`.

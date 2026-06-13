@@ -9,6 +9,7 @@ const functionNames = [
   'send-admissions-pin',
   'verify-admissions-pin',
   'list-school-admission-pins',
+  'create-school-admin',
 ];
 
 const shared = await readFile(
