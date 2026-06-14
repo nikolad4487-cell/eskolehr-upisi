@@ -1176,10 +1176,17 @@ function Login({ section = APP_SECTIONS.ematica, notice = '', onClearNotice = ()
     }
 
     const normalizedEmail = normalizeLoginEmail(email);
-    const { error: authError } = await supabase.auth.signInWithPassword({
+    let { error: authError } = await supabase.auth.signInWithPassword({
       email: normalizedEmail,
       password,
     });
+    if (authError && normalizedEmail.endsWith('@skolehr.xyz')) {
+      const legacyEmail = normalizedEmail.replace(/@skolehr\.xyz$/i, '@eskole.me');
+      ({ error: authError } = await supabase.auth.signInWithPassword({
+        email: legacyEmail,
+        password,
+      }));
+    }
     setLoading(false);
     if (authError) setError(getAuthErrorMessage(authError));
   };
