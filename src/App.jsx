@@ -347,10 +347,7 @@ function isHigherAdmissionsEligibleStudent(studentRecord, schoolLevel) {
 function isClassEligibleForAdmissions(record, track) {
   if (track === 'SECONDARY') return getClassGradeLevel(record) === 8;
   if (track === 'HIGHER_EDUCATION') {
-    if (isDifferentialClass(record)) return false;
-    const gradeLevel = getClassGradeLevel(record);
-    const duration = getProgramDurationYears(record);
-    return duration ? gradeLevel === duration : [4, 5].includes(gradeLevel);
+    return !isDifferentialClass(record) && getClassGradeLevel(record) === 4;
   }
   return false;
 }
@@ -1764,8 +1761,8 @@ function AdmissionsModule({ track, profile, session, access, isStudent = false, 
   const isTargetInstitutionManager = isManager && activeSchoolId && activeSchoolLevel === targetInstitutionLevel;
   const candidateView = effectiveTrack === 'SECONDARY' ? 'v_admissions_secondary_eligible' : 'v_admissions_higher_eligible';
   const eligibilityNote = effectiveTrack === 'SECONDARY'
-    ? 'Razrednik povlači samo aktivne učenike 8. razreda. Učenik zatim sam slaže listu prioriteta za srednje škole.'
-    : 'Razrednik povlači samo aktivne učenike završnih razreda srednje škole, uključujući 4. i 5. razred. Učenik zatim sam slaže listu prioriteta za fakultete.';
+    ? 'Razrednik povlači aktivne učenike 8. razreda zajedno sa zaključnim ocjenama iz 5., 6. i 7. razreda. Ocjene 8. razreda dopunjuju se nakon zaključivanja godine u e-Matici.'
+    : 'Razrednik povlači aktivne učenike 4. razreda, osim 4.K, zajedno sa zaključnim ocjenama iz 1., 2. i 3. razreda. Ocjene 4. razreda dopunjuju se nakon zaključivanja godine u e-Matici.';
   const candidates = useSupabaseQuery(
     () => supabase.from('v_admission_candidates_detailed').select('*').eq('track', effectiveTrack).order('full_name'),
     [effectiveTrack]
@@ -1799,7 +1796,10 @@ function AdmissionsModule({ track, profile, session, access, isStudent = false, 
   const [choiceForm, setChoiceForm] = useState({ target_program_id: '', priority: 1 });
   const [workflowForm, setWorkflowForm] = useState({ candidate_id: '', points: '' });
   const [message, setMessage] = useState('');
-  const eligibleClasses = classes.data.filter((item) => isClassEligibleForAdmissions(item, effectiveTrack));
+  const eligibleClasses = classes.data.filter((item) => (
+    isClassEligibleForAdmissions(item, effectiveTrack)
+    && item.school_year_id === candidateForm.school_year_id
+  ));
   const currentCandidate = candidates.data.find((item) => item.ednevnik_student_id === profile?.id || item.email === session?.user?.email) ?? null;
   const choices = useSupabaseQuery(async () => {
     if (!currentCandidate?.candidate_id) return { data: [], error: null };
@@ -1842,8 +1842,17 @@ function AdmissionsModule({ track, profile, session, access, isStudent = false, 
 
     const created = data?.filter((row) => row.result === 'CREATED').length ?? 0;
     const existing = data?.filter((row) => row.result === 'EXISTS').length ?? 0;
-    setMessage(error ? error.message : `Kandidati su povučeni u e-Upise. Novo: ${created}, već postoji: ${existing}.`);
-    if (!error) {
+    const failedRows = data?.filter((row) => String(row.result ?? '').startsWith('ERROR')) ?? [];
+    const failed = failedRows.length;
+    const syncedGradeYears = data?.reduce((sum, row) => sum + Number(row.grade_years_synced ?? 0), 0) ?? 0;
+    const failureDetails = failedRows.length
+      ? ` Razlog: ${failedRows.slice(0, 3).map((row) => String(row.result).replace(/^ERROR:\s*/, '')).join('; ')}`
+      : '';
+    const resultMessage = data?.length
+      ? `Učenici su povučeni iz e-Dnevnika. Novo: ${created}, već postoji: ${existing}, pogreške: ${failed}. Sinkronizirano zapisa ocjena: ${syncedGradeYears}.${failureDetails}`
+      : 'U odabranom razredu nema aktivnih učenika za povlačenje iz e-Dnevnika.';
+    setMessage(error ? error.message : resultMessage);
+    if (!error && failed === 0) {
       setCandidateForm({ class_id: '', school_year_id: '' });
       candidates.reload();
     }
@@ -1985,15 +1994,24 @@ function AdmissionsModule({ track, profile, session, access, isStudent = false, 
         <>
           <Panel title="Povlačenje kandidata po razredu">
             <form className="inline-form" onSubmit={createCandidatesForClass}>
-              <select value={candidateForm.class_id} onChange={(e) => setCandidateForm({ ...candidateForm, class_id: e.target.value })} required>
-                <option value="">Razred</option>
-                {eligibleClasses.map((item) => <option key={item.class_id} value={item.class_id}>{item.class_name} - {item.school_name}</option>)}
-              </select>
-              <select value={candidateForm.school_year_id} onChange={(e) => setCandidateForm({ ...candidateForm, school_year_id: e.target.value })}>
+              <select
+                value={candidateForm.school_year_id}
+                onChange={(e) => setCandidateForm({ school_year_id: e.target.value, class_id: '' })}
+                required
+              >
                 <option value="">Školska/akademska godina</option>
                 {years.data.map((year) => <option key={year.id} value={year.id}>{year.label ?? year.name}</option>)}
               </select>
-              <button className="primary" type="submit"><Users size={18} /><span>Povuci kandidate</span></button>
+              <select
+                value={candidateForm.class_id}
+                onChange={(e) => setCandidateForm({ ...candidateForm, class_id: e.target.value })}
+                disabled={!candidateForm.school_year_id}
+                required
+              >
+                <option value="">{candidateForm.school_year_id ? 'Razred' : 'Prvo odaberite školsku godinu'}</option>
+                {eligibleClasses.map((item) => <option key={item.class_id} value={item.class_id}>{item.class_name} - {item.school_name}</option>)}
+              </select>
+              <button className="primary" type="submit"><Users size={18} /><span>Povuci učenike iz e-Dnevnika</span></button>
             </form>
           </Panel>
 
