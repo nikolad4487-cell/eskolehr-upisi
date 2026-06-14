@@ -1074,7 +1074,8 @@ function App() {
 function normalizeLoginEmail(value) {
   const normalized = String(value ?? '').trim().toLowerCase();
   if (!normalized) return '';
-  return normalized.includes('@') ? normalized : `${normalized}@eskole.me`;
+  if (!normalized.includes('@')) return `${normalized}@skolehr.xyz`;
+  return normalized.replace(/@eskole\.me$/i, '@skolehr.xyz');
 }
 
 function getAuthErrorMessage(error) {
@@ -1228,7 +1229,7 @@ function Login({ section = APP_SECTIONS.ematica, notice = '', onClearNotice = ()
               aria-label="E-mail ili korisnicko ime"
               required
             />
-            {!hasEmailDomain && <span aria-hidden="true">@eskole.me</span>}
+            {!hasEmailDomain && <span aria-hidden="true">@skolehr.xyz</span>}
           </div>
         </label>
         {!resetMode && (

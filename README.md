@@ -25,7 +25,7 @@ http://127.0.0.1:5173
 Sva tri sustava koriste isti Supabase Auth račun:
 
 ```text
-skola@eskole.me
+skola@skolehr.xyz
 ```
 
 Račun prvo mora postojati u `Authentication > Users`. Nakon toga u SQL Editoru

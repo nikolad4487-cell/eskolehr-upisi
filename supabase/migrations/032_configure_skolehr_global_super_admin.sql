@@ -4,7 +4,7 @@
 
 do $$
 declare
-  v_email constant text := 'skola@eskole.me';
+  v_email constant text := 'skola@skolehr.xyz';
   v_auth_user_id uuid;
   v_profile_id uuid;
 begin

@@ -6,7 +6,8 @@ import {
 
 function normalizeEmail(value: string) {
   const email = value.trim().toLowerCase();
-  return email.includes('@') ? email : `${email}@eskole.me`;
+  if (!email.includes('@')) return `${email}@skolehr.xyz`;
+  return email.replace(/@eskole\.me$/i, '@skolehr.xyz');
 }
 
 Deno.serve(async (req) => {

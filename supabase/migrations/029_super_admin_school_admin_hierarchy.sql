@@ -205,4 +205,4 @@ with check (
 -- Run once after this migration, replacing the email with the real account:
 -- update public.user_profiles
 -- set access_role = 'super_admin', active_school_id = null
--- where lower(email) = lower('glavni.admin@eskole.me');
+-- where lower(email) = lower('glavni.admin@skolehr.xyz');
