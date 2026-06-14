@@ -1,3 +1,4 @@
+import bcrypt from 'npm:bcryptjs@2.4.3';
 import {
   corsHeaders,
   getAuthenticatedUser,
@@ -21,7 +22,7 @@ Deno.serve(async (req) => {
     const body = await req.json();
     const schoolId = String(body.school_id ?? '').trim();
     const email = normalizeEmail(String(body.email ?? ''));
-    const password = String(body.password ?? '');
+    const pin = String(body.password ?? '');
     const firstName = String(body.first_name ?? '').trim();
     const lastName = String(body.last_name ?? '').trim();
     const fullName = `${firstName} ${lastName}`.trim();
@@ -29,8 +30,8 @@ Deno.serve(async (req) => {
     if (!schoolId || !firstName || !lastName || !email) {
       return jsonResponse({ error: 'Škola, ime, prezime i e-mail su obvezni.' }, 400);
     }
-    if (password.length < 8) {
-      return jsonResponse({ error: 'Lozinka mora imati najmanje 8 znakova.' }, 400);
+    if (!/^\d{4}$/.test(pin)) {
+      return jsonResponse({ error: 'PIN mora imati točno 4 znamenke.' }, 400);
     }
 
     const { data: caller, error: callerError } = await admin
@@ -55,52 +56,90 @@ Deno.serve(async (req) => {
 
     if (schoolError || !school) return jsonResponse({ error: 'Škola nije pronađena.' }, 404);
 
-    const { data: existingAdmin } = await admin
-      .from('user_profiles')
-      .select('id, email')
-      .eq('active_school_id', schoolId)
-      .eq('access_role', 'school_admin')
-      .limit(1)
-      .maybeSingle();
-
-    if (existingAdmin) {
-      return jsonResponse({
-        error: `Škola već ima glavnog administratora (${existingAdmin.email}).`,
-      }, 409);
+    const authUsers = [];
+    for (let page = 1; ; page += 1) {
+      const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 1000 });
+      if (error) throw error;
+      authUsers.push(...data.users);
+      if (data.users.length < 1000) break;
     }
 
-    const { data: authData, error: authError } = await admin.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: true,
-      user_metadata: {
-        name: fullName,
-        first_name: firstName,
-        last_name: lastName,
-      },
+    const legacyEmail = email.replace(/@skolehr\.xyz$/i, '@eskole.me');
+    let authUser = authUsers.find((item) => {
+      const candidate = String(item.email ?? '').toLowerCase();
+      return candidate === email || candidate === legacyEmail;
     });
 
-    if (authError || !authData.user) {
-      throw new Error(authError?.message ?? 'Auth račun nije moguće stvoriti.');
-    }
-    createdAuthUserId = authData.user.id;
-
-    const { data: profile, error: profileError } = await admin
-      .from('user_profiles')
-      .insert({
-        auth_user_id: authData.user.id,
+    if (authUser) {
+      const { data, error } = await admin.auth.admin.updateUserById(authUser.id, {
         email,
-        name: fullName,
-        access_role: 'school_admin',
-        active_school_id: schoolId,
-        is_first_login: true,
-        requires_password_change: true,
-      })
-      .select('id, email, name, access_role, active_school_id')
-      .single();
+        password: pin,
+        email_confirm: true,
+        user_metadata: {
+          ...authUser.user_metadata,
+          name: fullName,
+          first_name: firstName,
+          last_name: lastName,
+        },
+      });
+      if (error || !data.user) throw new Error(error?.message ?? 'Auth račun nije moguće ažurirati.');
+      authUser = data.user;
+    } else {
+      const { data, error } = await admin.auth.admin.createUser({
+        email,
+        password: pin,
+        email_confirm: true,
+        user_metadata: {
+          name: fullName,
+          first_name: firstName,
+          last_name: lastName,
+        },
+      });
+      if (error || !data.user) throw new Error(error?.message ?? 'Auth račun nije moguće stvoriti.');
+      authUser = data.user;
+      createdAuthUserId = authUser.id;
+    }
 
+    const pinHash = await bcrypt.hash(pin, 10);
+    const { data: existingProfile, error: existingProfileError } = await admin
+      .from('user_profiles')
+      .select('id')
+      .or(`auth_user_id.eq.${authUser.id},email.ilike.${email},email.ilike.${legacyEmail}`)
+      .limit(1)
+      .maybeSingle();
+    if (existingProfileError) throw existingProfileError;
+
+    const profilePayload = {
+      auth_user_id: authUser.id,
+      email,
+      name: fullName,
+      role: 'SCHOOL_ADMIN',
+      access_role: 'school_admin',
+      active_school_id: schoolId,
+      school_id: schoolId,
+      pin_hash: pinHash,
+      is_first_login: true,
+      requires_password_change: false,
+      password_type: 'staff_with_authenticator',
+      authenticator_secret: null,
+      requires_authenticator_setup: true,
+    };
+
+    const profileResult = existingProfile
+      ? await admin
+          .from('user_profiles')
+          .update(profilePayload)
+          .eq('id', existingProfile.id)
+          .select('id, email, name, access_role, active_school_id')
+          .single()
+      : await admin
+          .from('user_profiles')
+          .insert(profilePayload)
+          .select('id, email, name, access_role, active_school_id')
+          .single();
+    const { data: profile, error: profileError } = profileResult;
     if (profileError || !profile) {
-      throw new Error(profileError?.message ?? 'Korisnički profil nije moguće stvoriti.');
+      throw new Error(profileError?.message ?? 'Korisnički profil nije moguće sinkronizirati.');
     }
 
     const { error: schoolRoleError } = await admin
@@ -113,17 +152,13 @@ Deno.serve(async (req) => {
       }, {
         onConflict: 'user_id,school_id,role',
       });
-
-    if (schoolRoleError) {
-      await admin.from('user_profiles').delete().eq('id', profile.id);
-      throw new Error(schoolRoleError.message);
-    }
+    if (schoolRoleError) throw new Error(schoolRoleError.message);
 
     return jsonResponse({
-      message: `Administrator škole ${school.name} je stvoren.`,
+      message: `Administrator ustanove ${school.name} sinkroniziran je s e-Dnevnikom.`,
       profile,
       school,
-    }, 201);
+    }, existingProfile ? 200 : 201);
   } catch (error) {
     if (createdAuthUserId) {
       try {
@@ -135,7 +170,7 @@ Deno.serve(async (req) => {
     }
 
     return jsonResponse({
-      error: error instanceof Error ? error.message : 'Administratora škole nije moguće stvoriti.',
+      error: error instanceof Error ? error.message : 'Administratora ustanove nije moguće sinkronizirati.',
     }, 400);
   }
 });

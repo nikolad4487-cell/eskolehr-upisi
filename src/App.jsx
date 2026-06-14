@@ -3064,10 +3064,13 @@ function AccessManagement() {
           />
           <input
             type="password"
-            minLength={8}
-            placeholder="Početna lozinka"
+            inputMode="numeric"
+            pattern="\d{4}"
+            minLength={4}
+            maxLength={4}
+            placeholder="Početni PIN (4 znamenke)"
             value={form.password}
-            onChange={(e) => setForm({ ...form, password: e.target.value })}
+            onChange={(e) => setForm({ ...form, password: e.target.value.replace(/\D/g, '').slice(0, 4) })}
             required
           />
           <button className="primary" type="submit" disabled={saving}>
@@ -3284,6 +3287,11 @@ function Schools({ adminScope = {} }) {
     const { error } = await supabase.from('schools').insert({
       id: crypto.randomUUID(),
       ...form,
+      type: form.education_level === 'ELEMENTARY'
+        ? 'PRIMARY'
+        : form.education_level === 'HIGHER'
+          ? 'HIGHER'
+          : 'SECONDARY',
     });
     setMessage(error ? error.message : 'Škola je dodana.');
     if (!error) {
@@ -3315,6 +3323,11 @@ function Schools({ adminScope = {} }) {
         city: editForm.city || null,
         email: editForm.email || null,
         education_level: editForm.education_level,
+        type: editForm.education_level === 'ELEMENTARY'
+          ? 'PRIMARY'
+          : editForm.education_level === 'HIGHER'
+            ? 'HIGHER'
+            : 'SECONDARY',
         is_active: editForm.is_active,
       })
       .eq('id', editForm.id);
