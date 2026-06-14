@@ -570,7 +570,40 @@ function App() {
               .maybeSingle(),
             'Učitavanje korisničkih ovlasti'
           );
-          const nextAccess = accessData ?? null;
+          const { data: schoolRoles } = await withTimeout(
+            supabase
+              .from('user_school_roles')
+              .select('school_id,role,status')
+              .eq('user_id', data.id)
+              .in('role', ['SCHOOL_ADMIN', 'ADMIN', 'MAIN_ADMIN']),
+            'Učitavanje administratorskih uloga iz e-Dnevnika'
+          );
+          const ednevnikAdminRole = (schoolRoles ?? []).find(
+            (item) => !item.status || String(item.status).toUpperCase() === 'ACTIVE'
+          );
+          let roleSchool = null;
+          if (ednevnikAdminRole?.school_id) {
+            const { data: schoolData } = await withTimeout(
+              supabase
+                .from('schools')
+                .select('id,name,education_level')
+                .eq('id', ednevnikAdminRole.school_id)
+                .maybeSingle(),
+              'Učitavanje škole administratora'
+            );
+            roleSchool = schoolData ?? null;
+          }
+          const nextAccess = {
+            ...(accessData ?? {}),
+            profile_id: accessData?.profile_id ?? data.id,
+            auth_user_id: accessData?.auth_user_id ?? data.auth_user_id,
+            email: accessData?.email ?? data.email,
+            active_school_id: accessData?.active_school_id ?? ednevnikAdminRole?.school_id ?? null,
+            active_school_name: accessData?.active_school_name ?? roleSchool?.name ?? null,
+            active_school_level: accessData?.active_school_level ?? roleSchool?.education_level ?? null,
+            is_school_admin: Boolean(accessData?.is_school_admin || ednevnikAdminRole),
+            is_admin: Boolean(accessData?.is_admin || ednevnikAdminRole),
+          };
           setAccess(nextAccess);
           writeSessionValue(SESSION_KEYS.access, nextAccess);
         } else {
@@ -2886,6 +2919,14 @@ function AccessManagement() {
       .order('email'),
     []
   );
+  const ednevnikAdminRoles = useSupabaseQuery(
+    () => supabase
+      .from('user_school_roles')
+      .select('id,user_id,school_id,role,status,user:user_profiles(*)')
+      .in('role', ['SCHOOL_ADMIN', 'ADMIN', 'MAIN_ADMIN'])
+      .order('school_id'),
+    []
+  );
   const schools = useSupabaseQuery(() => supabase.from('schools').select('id,name,education_level').order('name'), []);
   const [form, setForm] = useState({
     school_id: '',
@@ -2902,11 +2943,45 @@ function AccessManagement() {
   const [saving, setSaving] = useState(false);
   const selectedSchool = schools.data.find((school) => school.id === selectedSchoolId) ?? null;
   const schoolProfiles = useMemo(() => {
+    const merged = new Map();
+
+    profiles.data.forEach((profile) => {
+      if (!profile.active_school_id) return;
+      merged.set(`${profile.id}:${profile.active_school_id}`, {
+        ...profile,
+        admin_source: 'ematica',
+        school_role_id: null,
+        school_role: null,
+      });
+    });
+
+    ednevnikAdminRoles.data
+      .filter((item) => !item.status || String(item.status).toUpperCase() === 'ACTIVE')
+      .forEach((item) => {
+        const profile = Array.isArray(item.user) ? item.user[0] : item.user;
+        if (!profile || !item.school_id) return;
+
+        const key = `${profile.id}:${item.school_id}`;
+        const existing = merged.get(key);
+        merged.set(key, {
+          ...profile,
+          ...existing,
+          active_school_id: item.school_id,
+          access_role: item.role === 'SCHOOL_ADMIN'
+            ? 'school_admin'
+            : String(item.role ?? '').toLowerCase(),
+          admin_source: existing ? 'ematica_ednevnik' : 'ednevnik',
+          school_role_id: item.id,
+          school_role: item.role,
+        });
+      });
+
+    const allProfiles = [...merged.values()];
     const rows = selectedSchoolId
-      ? profiles.data.filter((profile) => profile.active_school_id === selectedSchoolId)
-      : profiles.data;
+      ? allProfiles.filter((profile) => profile.active_school_id === selectedSchoolId)
+      : allProfiles;
     return [...rows].sort(compareProfilesByLastName);
-  }, [profiles.data, selectedSchoolId]);
+  }, [profiles.data, ednevnikAdminRoles.data, selectedSchoolId]);
 
   const createSchoolAdmin = async (event) => {
     event.preventDefault();
@@ -2926,6 +3001,7 @@ function AccessManagement() {
       setMessage(data?.message ?? 'Administrator škole je stvoren.');
       setForm({ school_id: '', first_name: '', last_name: '', email: '', password: '' });
       profiles.reload();
+      ednevnikAdminRoles.reload();
     }
     setSaving(false);
   };
@@ -2935,18 +3011,37 @@ function AccessManagement() {
     if (!confirmed) return;
 
     setMessage('');
-    const { error } = await supabase
-      .from('user_profiles')
-      .update({ access_role: null, active_school_id: null })
-      .eq('id', profile.id);
-
-    if (!error) {
-      await supabase
+    let roleError = null;
+    if (profile.school_role_id) {
+      const result = await supabase
+        .from('user_school_roles')
+        .delete()
+        .eq('id', profile.school_role_id);
+      roleError = result.error;
+    } else {
+      const result = await supabase
         .from('user_school_roles')
         .delete()
         .eq('user_id', profile.id)
-        .eq('role', 'SCHOOL_ADMIN');
+        .eq('school_id', profile.active_school_id)
+        .in('role', ['SCHOOL_ADMIN', 'ADMIN', 'MAIN_ADMIN']);
+      roleError = result.error;
+    }
+
+    let profileError = null;
+    if (!roleError && ['ematica', 'ematica_ednevnik'].includes(profile.admin_source)) {
+      const result = await supabase
+        .from('user_profiles')
+        .update({ access_role: null, active_school_id: null })
+        .eq('id', profile.id)
+        .eq('active_school_id', profile.active_school_id);
+      profileError = result.error;
+    }
+
+    const error = roleError || profileError;
+    if (!error) {
       profiles.reload();
+      ednevnikAdminRoles.reload();
     }
     setMessage(error ? error.message : 'Administratorske ovlasti su uklonjene.');
   };
@@ -3000,7 +3095,7 @@ function AccessManagement() {
         </div>
       </Panel>
 
-      <RoleUsersPanel title="Glavni administratori škola" profiles={schoolProfiles} schools={schools.data} onClearAccess={clearProfileAccess} />
+      <RoleUsersPanel title="Administratori škola iz e-Dnevnika i e-Matice" profiles={schoolProfiles} schools={schools.data} onClearAccess={clearProfileAccess} />
     </div>
   );
 }
@@ -3014,7 +3109,13 @@ function RoleUsersPanel({ title, profiles, schools, onClearAccess }) {
           getProfileDisplayName(profile),
           profile.email ?? '-',
           schools.find((school) => school.id === profile.active_school_id)?.name ?? '-',
-          profile.access_role === 'school_admin' ? 'Glavni administrator škole' : profile.access_role,
+          profile.school_role === 'MAIN_ADMIN'
+            ? 'Glavni administrator'
+            : profile.access_role === 'school_admin'
+              ? 'Administrator škole'
+              : profile.school_role === 'ADMIN'
+                ? 'Administrator'
+                : profile.access_role,
           <div className="row-actions" key={`${profile.id}-actions`}>
             <button className="small-button danger" type="button" onClick={() => onClearAccess(profile)}>Ukloni ovlasti</button>
           </div>,
