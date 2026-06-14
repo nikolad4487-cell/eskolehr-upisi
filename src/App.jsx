@@ -64,6 +64,14 @@ const TEACHER_ADMISSIONS_NAV_ITEMS = [
   { id: 'admissions', label: 'Kandidature i ponuda', icon: GraduationCap },
 ];
 
+const SUPER_ADMIN_ADMISSIONS_NAV_ITEMS = [
+  { id: 'dashboard', label: 'Pregled modula', icon: LayoutDashboard },
+  { id: 'admissions', label: 'Kandidature i ponuda', icon: GraduationCap },
+  { id: 'schools', label: 'Škole i fakulteti', icon: Building2 },
+  { id: 'programs', label: 'Programi', icon: BookOpen },
+  { id: 'access', label: 'Administratori škola', icon: ShieldAlert },
+];
+
 const LOCKED_NAV_ITEMS = [
   { id: 'locked', label: 'Pristup', icon: ShieldAlert },
 ];
@@ -651,13 +659,15 @@ function App() {
   const canUseSecondaryAdmissions = isStudent
     ? isSecondaryAdmissionsEligibleStudent(studentRecord, activeSchoolLevel)
     : (
-        (activeSchoolLevel === 'ELEMENTARY' && (isAdmin || isHomeroomTeacher))
+        isSuperAdmin
+        || (activeSchoolLevel === 'ELEMENTARY' && (isAdmin || isHomeroomTeacher))
         || (activeSchoolLevel === 'SECONDARY' && isAdmin)
       );
   const canUseHigherAdmissions = isStudent
     ? isHigherAdmissionsEligibleStudent(studentRecord, activeSchoolLevel)
     : (
-        (activeSchoolLevel === 'SECONDARY' && (isAdmin || isHomeroomTeacher))
+        isSuperAdmin
+        || (activeSchoolLevel === 'SECONDARY' && (isAdmin || isHomeroomTeacher))
         || (activeSchoolLevel === 'HIGHER' && isAdmin)
       );
   const canUseEmaticaInApp = appAllowsSection(APP_SECTIONS.ematica.id) && canUseEmatica;
@@ -855,7 +865,11 @@ function App() {
     }
   }, [activeSection, availableSections]);
 
-  const admissionsNavItems = isStudent ? STUDENT_NAV_ITEMS : TEACHER_ADMISSIONS_NAV_ITEMS;
+  const admissionsNavItems = isStudent
+    ? STUDENT_NAV_ITEMS
+    : isSuperAdmin
+      ? SUPER_ADMIN_ADMISSIONS_NAV_ITEMS
+      : TEACHER_ADMISSIONS_NAV_ITEMS;
   const adminNavItems = isSuperAdmin
     ? EMATICA_NAV_ITEMS
     : EMATICA_NAV_ITEMS.filter((item) => item.id !== 'access');
@@ -1040,6 +1054,15 @@ function App() {
               isStudent={isStudent}
               isManager={!isStudent}
             />
+          )}
+          {activeSection !== APP_SECTIONS.ematica.id && canUseActiveAdmissionsSection && isSuperAdmin && activePage === 'schools' && (
+            <Schools adminScope={{ schoolId: '', schoolName: '', isScoped: false }} />
+          )}
+          {activeSection !== APP_SECTIONS.ematica.id && canUseActiveAdmissionsSection && isSuperAdmin && activePage === 'programs' && (
+            <Programs adminScope={{ schoolId: '', schoolName: '', isScoped: false }} />
+          )}
+          {activeSection !== APP_SECTIONS.ematica.id && canUseActiveAdmissionsSection && isSuperAdmin && activePage === 'access' && (
+            <AccessManagement />
           )}
           {activeSection !== APP_SECTIONS.ematica.id && !canUseActiveAdmissionsSection && activePage === 'locked' && <AccessLocked section={activeSection} />}
         </section>

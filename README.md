@@ -20,6 +20,26 @@ https://fakulteti.skolehr.xyz
 http://127.0.0.1:5173
 ```
 
+## Globalni administrator
+
+Sva tri sustava koriste isti Supabase Auth račun:
+
+```text
+skola@eskole.me
+```
+
+Račun prvo mora postojati u `Authentication > Users`. Nakon toga u SQL Editoru
+pokrenuti:
+
+```text
+supabase/migrations/029_super_admin_school_admin_hierarchy.sql
+supabase/migrations/032_configure_skolehr_global_super_admin.sql
+```
+
+Korisnik dobiva ulogu `super_admin`, nije povezan ni s jednom školom te može
+upravljati školama, fakultetima, programima i glavnim administratorima škola
+u e-Matici i na oba e-Upisi portala.
+
 ## SMS PIN za učenike
 
 Pokrenuti SQL migraciju:
