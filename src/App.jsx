@@ -1830,6 +1830,21 @@ function AdmissionsModule({ track, profile, session, access, isStudent = false, 
     bodovi: item.total_points,
     skolska_godina: item.school_year_label,
   }));
+  const candidateClassGroups = Object.entries(
+    candidates.data.reduce((groups, candidate) => {
+      const className = candidate.source_class_name ?? 'Bez razrednog odjela';
+      if (!groups[className]) groups[className] = [];
+      groups[className].push(candidate);
+      return groups;
+    }, {})
+  )
+    .sort(([classNameA], [classNameB]) => classNameA.localeCompare(classNameB, 'hr', { numeric: true }))
+    .map(([className, classCandidates]) => ({
+      className,
+      candidates: [...classCandidates].sort((candidateA, candidateB) => (
+        profileSortKey(candidateA).localeCompare(profileSortKey(candidateB), 'hr')
+      )),
+    }));
 
   const createCandidatesForClass = async (event) => {
     event.preventDefault();
@@ -2036,29 +2051,45 @@ function AdmissionsModule({ track, profile, session, access, isStudent = false, 
 
           <Panel title="Kandidati" action={<ExportButton filename="e-upisi-kandidati.csv" rows={exportRows} />}>
             <DataState state={candidates}>
-              <Table
-                columns={['Kandidat', 'Status', 'Izvorna škola', 'Razred', 'Bodovi', 'Godina', 'Akcije']}
-                rows={candidates.data.map((item) => [
-                  item.full_name,
-                  <ApplicationStatusBadge key={`${item.candidate_id}-status`} value={item.status} />,
-                  item.source_school_name ?? '-',
-                  item.source_class_name ?? '-',
-                  item.total_points ?? '-',
-                  item.school_year_label ?? '-',
-                  <div className="application-actions" key={`${item.candidate_id}-actions`}>
-                    <input
-                      className="mini-input"
-                      placeholder="Bodovi"
-                      value={workflowForm.candidate_id === item.candidate_id ? workflowForm.points : ''}
-                      onChange={(e) => setWorkflowForm({ candidate_id: item.candidate_id, points: e.target.value })}
-                    />
-                    <button className="small-button" type="button" onClick={() => updateCandidateWorkflow(item.candidate_id)}>Spremi bodove</button>
-                    <button className="small-button" type="button" onClick={() => updateCandidateWorkflow(item.candidate_id, 'VERIFIED')}>Provjeri</button>
-                    <button className="small-button" type="button" onClick={() => updateCandidateWorkflow(item.candidate_id, 'RETURNED')}>Vrati</button>
-                    <button className="small-button danger" type="button" onClick={() => updateCandidateWorkflow(item.candidate_id, 'REJECTED')}>Odbij</button>
-                  </div>,
-                ])}
-              />
+              {candidateClassGroups.length === 0 ? (
+                <div className="empty">Nema kandidata</div>
+              ) : (
+                <div className="candidate-class-groups">
+                  {candidateClassGroups.map((group) => (
+                    <section className="candidate-class-group" key={group.className}>
+                      <div className="candidate-class-heading">
+                        <div>
+                          <span>Razredni odjel</span>
+                          <h3>{group.className}</h3>
+                        </div>
+                        <strong>{group.candidates.length} učenika</strong>
+                      </div>
+                      <Table
+                        columns={['Kandidat', 'Status', 'Izvorna škola', 'Bodovi', 'Godina', 'Akcije']}
+                        rows={group.candidates.map((item) => [
+                          item.full_name,
+                          <ApplicationStatusBadge key={`${item.candidate_id}-status`} value={item.status} />,
+                          item.source_school_name ?? '-',
+                          item.total_points ?? '-',
+                          item.school_year_label ?? '-',
+                          <div className="application-actions" key={`${item.candidate_id}-actions`}>
+                            <input
+                              className="mini-input"
+                              placeholder="Bodovi"
+                              value={workflowForm.candidate_id === item.candidate_id ? workflowForm.points : ''}
+                              onChange={(e) => setWorkflowForm({ candidate_id: item.candidate_id, points: e.target.value })}
+                            />
+                            <button className="small-button" type="button" onClick={() => updateCandidateWorkflow(item.candidate_id)}>Spremi bodove</button>
+                            <button className="small-button" type="button" onClick={() => updateCandidateWorkflow(item.candidate_id, 'VERIFIED')}>Provjeri</button>
+                            <button className="small-button" type="button" onClick={() => updateCandidateWorkflow(item.candidate_id, 'RETURNED')}>Vrati</button>
+                            <button className="small-button danger" type="button" onClick={() => updateCandidateWorkflow(item.candidate_id, 'REJECTED')}>Odbij</button>
+                          </div>,
+                        ])}
+                      />
+                    </section>
+                  ))}
+                </div>
+              )}
             </DataState>
           </Panel>
 
