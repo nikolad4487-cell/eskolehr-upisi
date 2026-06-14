@@ -3281,7 +3281,10 @@ function Schools({ adminScope = {} }) {
   const create = async (event) => {
     event.preventDefault();
     setMessage('');
-    const { error } = await supabase.from('schools').insert(form);
+    const { error } = await supabase.from('schools').insert({
+      id: crypto.randomUUID(),
+      ...form,
+    });
     setMessage(error ? error.message : 'Škola je dodana.');
     if (!error) {
       setForm({ name: '', code: '', city: '', email: '', education_level: 'SECONDARY' });
