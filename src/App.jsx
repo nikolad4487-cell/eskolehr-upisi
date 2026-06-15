@@ -1281,6 +1281,7 @@ function Login({ section = APP_SECTIONS.ematica, notice = '', onClearNotice = ()
                 onChange={(event) => setPassword(event.target.value)}
                 type={showPassword ? 'text' : 'password'}
                 autoComplete="current-password"
+                placeholder={isAdmissionsLogin ? 'Lozinka učenika: yupu8Ev4' : 'Lozinka'}
                 required
               />
               <button
@@ -1292,6 +1293,7 @@ function Login({ section = APP_SECTIONS.ematica, notice = '', onClearNotice = ()
                 {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
               </button>
             </div>
+            {isAdmissionsLogin && <small>Učenici se prijavljuju lozinkom yupu8Ev4 iz e-Dnevnika.</small>}
           </label>
         )}
         {!resetMode && isAdmissionsLogin && pinRequired && (
@@ -1910,6 +1912,39 @@ function AdmissionsModule({ track, profile, session, access, isStudent = false, 
       )),
     }));
 
+  const syncCandidatePasswords = async () => {
+    setMessage('');
+    if (!candidateForm.class_id || !candidateForm.school_year_id) {
+      setMessage('Prvo odaberite školsku godinu i razred.');
+      return;
+    }
+
+    const { data, error } = await supabase.functions.invoke(
+      'sync-admission-student-passwords',
+      {
+        body: {
+          class_id: candidateForm.class_id,
+          school_year_id: candidateForm.school_year_id,
+          track: effectiveTrack,
+        },
+      },
+    );
+
+    const errorMessage = error
+      ? await getEdgeFunctionErrorMessage(data, error, 'Usklađivanje lozinki nije uspjelo.')
+      : data?.error;
+    if (errorMessage) {
+      setMessage(`Lozinke nisu usklađene: ${errorMessage}`);
+      return;
+    }
+
+    const updated = Number(data?.updated ?? 0);
+    const failed = Number(data?.failed ?? 0);
+    setMessage(
+      `Lozinka yupu8Ev4 usklađena je za ${updated} učenika${failed ? `, greške: ${failed}` : ''}.`,
+    );
+  };
+
   const createCandidatesForClass = async (event) => {
     event.preventDefault();
     setMessage('');
@@ -1927,10 +1962,28 @@ function AdmissionsModule({ track, profile, session, access, isStudent = false, 
     const failureDetails = failedRows.length
       ? ` Razlog: ${failedRows.slice(0, 3).map((row) => String(row.result).replace(/^ERROR:\s*/, '')).join('; ')}`
       : '';
+    let passwordSyncMessage = '';
+    if (!error && data?.length) {
+      const { data: passwordSyncData, error: passwordSyncError } = await supabase.functions.invoke(
+        'sync-admission-student-passwords',
+        {
+          body: {
+            class_id: candidateForm.class_id,
+            school_year_id: candidateForm.school_year_id,
+            track: effectiveTrack,
+          },
+        },
+      );
+
+      passwordSyncMessage = passwordSyncError
+        ? ' Lozinke nisu usklađene; deployajte funkciju sync-admission-student-passwords.'
+        : ` Lozinka yupu8Ev4 usklađena je za ${Number(passwordSyncData?.updated ?? 0)} učenika.`;
+    }
+
     const resultMessage = data?.length
       ? `Učenici su povučeni iz e-Dnevnika. Novo: ${created}, već postoji: ${existing}, pogreške: ${failed}. Sinkronizirano zapisa ocjena: ${syncedGradeYears}.${failureDetails}`
       : 'U odabranom razredu nema aktivnih učenika za povlačenje iz e-Dnevnika.';
-    setMessage(error ? error.message : resultMessage);
+    setMessage(error ? error.message : `${resultMessage}${passwordSyncMessage}`);
     if (!error && failed === 0) {
       setCandidateForm({ class_id: '', school_year_id: '' });
       candidates.reload();
@@ -2091,6 +2144,9 @@ function AdmissionsModule({ track, profile, session, access, isStudent = false, 
                 {eligibleClasses.map((item) => <option key={item.class_id} value={item.class_id}>{item.class_name} - {item.school_name}</option>)}
               </select>
               <button className="primary" type="submit"><Users size={18} /><span>Povuci učenike iz e-Dnevnika</span></button>
+              <button className="small-button" type="button" onClick={syncCandidatePasswords}>
+                Uskladi lozinke učenika
+              </button>
             </form>
           </Panel>
 

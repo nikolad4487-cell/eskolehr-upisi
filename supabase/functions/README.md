@@ -35,6 +35,7 @@ Deployati obje funkcije:
 send-admissions-pin
 verify-admissions-pin
 list-school-admission-pins
+sync-admission-student-passwords
 ```
 
 Funkcije zahtijevaju prijavljenog Supabase korisnika. PIN je trajan, ponovno
