@@ -12,6 +12,21 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
+async function findAuthUserByEmails(
+  admin: ReturnType<typeof createClient>,
+  emails: string[],
+) {
+  const acceptedEmails = new Set(emails.map((email) => email.toLowerCase()));
+  for (let page = 1; ; page += 1) {
+    const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 1000 });
+    if (error) throw error;
+    const user = data.users.find((item) =>
+      acceptedEmails.has(String(item.email ?? '').toLowerCase())
+    );
+    if (user || data.users.length < 1000) return user ?? null;
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -93,34 +108,103 @@ Deno.serve(async (req) => {
 
     for (const candidate of candidates ?? []) {
       let profileId = candidate.ednevnik_student_id;
-      if (!profileId && candidate.registry_student_id) {
-        const { data: student } = await admin
+      let student: {
+        email?: string | null;
+        first_name?: string | null;
+        last_name?: string | null;
+        ednevnik_student_id?: string | null;
+      } | null = null;
+
+      if (candidate.registry_student_id) {
+        const { data, error } = await admin
           .from('registry_students')
-          .select('ednevnik_student_id')
+          .select('email, first_name, last_name, ednevnik_student_id')
           .eq('id', candidate.registry_student_id)
           .maybeSingle();
-        profileId = student?.ednevnik_student_id ?? null;
+        if (error) {
+          errors.push(`${candidate.id}: ${error.message}`);
+          continue;
+        }
+        student = data;
+        profileId = profileId ?? student?.ednevnik_student_id ?? null;
       }
 
-      if (!profileId) {
-        errors.push(`${candidate.id}: učenik nema povezan e-Dnevnik profil`);
+      let studentProfile: {
+        id: string;
+        auth_user_id?: string | null;
+        email?: string | null;
+      } | null = null;
+
+      if (profileId) {
+        const { data, error } = await admin
+          .from('user_profiles')
+          .select('id, auth_user_id, email')
+          .eq('id', profileId)
+          .maybeSingle();
+        if (error) {
+          errors.push(`${candidate.id}: ${error.message}`);
+          continue;
+        }
+        studentProfile = data;
+      }
+
+      const sourceEmail = String(student?.email ?? studentProfile?.email ?? '')
+        .trim()
+        .toLowerCase();
+      const canonicalEmail = sourceEmail.replace(/@eskole\.me$/i, '@skolehr.xyz');
+      const legacyEmail = canonicalEmail.replace(/@skolehr\.xyz$/i, '@eskole.me');
+      const emailCandidates = [...new Set([canonicalEmail, legacyEmail].filter(Boolean))];
+
+      if (!studentProfile && emailCandidates.length) {
+        const { data, error } = await admin
+          .from('user_profiles')
+          .select('id, auth_user_id, email')
+          .in('email', emailCandidates)
+          .limit(1)
+          .maybeSingle();
+        if (error) {
+          errors.push(`${candidate.id}: ${error.message}`);
+          continue;
+        }
+        studentProfile = data;
+      }
+
+      if (!studentProfile) {
+        errors.push(`${candidate.id}: postojeći profil učenika nije pronađen`);
         continue;
       }
 
-      const { data: studentProfile, error: profileError } = await admin
-        .from('user_profiles')
-        .select('id, auth_user_id')
-        .eq('id', profileId)
-        .maybeSingle();
-      if (profileError || !studentProfile?.auth_user_id) {
-        errors.push(`${candidate.id}: Auth račun učenika nije pronađen`);
-        continue;
+      let authUserId = studentProfile.auth_user_id ?? null;
+      if (!authUserId && emailCandidates.length) {
+        const existingAuthUser = await findAuthUserByEmails(admin, emailCandidates);
+        authUserId = existingAuthUser?.id ?? null;
       }
 
-      const { error: passwordError } = await admin.auth.admin.updateUserById(
-        studentProfile.auth_user_id,
-        { password: 'yupu8Ev4' },
-      );
+      if (!authUserId) {
+        if (!canonicalEmail) {
+          errors.push(`${candidate.id}: učenik nema e-mail za Auth račun`);
+          continue;
+        }
+        const { data, error } = await admin.auth.admin.createUser({
+          email: canonicalEmail,
+          password: 'yupu8Ev4',
+          email_confirm: true,
+          user_metadata: {
+            name: student?.first_name ?? '',
+            surname: student?.last_name ?? '',
+          },
+        });
+        if (error || !data.user) {
+          errors.push(`${candidate.id}: ${error?.message ?? 'Auth račun nije stvoren'}`);
+          continue;
+        }
+        authUserId = data.user.id;
+      }
+
+      const { error: passwordError } = await admin.auth.admin.updateUserById(authUserId, {
+        password: 'yupu8Ev4',
+        email_confirm: true,
+      });
       if (passwordError) {
         errors.push(`${candidate.id}: ${passwordError.message}`);
         continue;
@@ -129,6 +213,8 @@ Deno.serve(async (req) => {
       const { error: updateError } = await admin
         .from('user_profiles')
         .update({
+          auth_user_id: authUserId,
+          ...(canonicalEmail ? { email: canonicalEmail } : {}),
           password_type: 'student_static',
           requires_password_change: false,
         })

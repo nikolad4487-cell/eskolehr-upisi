@@ -1940,8 +1940,11 @@ function AdmissionsModule({ track, profile, session, access, isStudent = false, 
 
     const updated = Number(data?.updated ?? 0);
     const failed = Number(data?.failed ?? 0);
+    const failureDetails = failed && Array.isArray(data?.errors)
+      ? ` Razlog: ${data.errors.slice(0, 3).join('; ')}`
+      : '';
     setMessage(
-      `Lozinka yupu8Ev4 usklađena je za ${updated} učenika${failed ? `, greške: ${failed}` : ''}.`,
+      `Lozinka yupu8Ev4 usklađena je za ${updated} učenika${failed ? `, greške: ${failed}` : ''}.${failureDetails}`,
     );
   };
 
