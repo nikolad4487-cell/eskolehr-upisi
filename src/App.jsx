@@ -1105,8 +1105,11 @@ function App() {
 }
 
 function normalizeLoginEmail(value) {
-  const normalized = String(value ?? '').trim().toLowerCase();
+  let normalized = String(value ?? '').trim().toLowerCase();
   if (!normalized) return '';
+  if (normalized === 'skole' || normalized === 'skole@skolehr.xyz') {
+    return 'skola@skolehr.xyz';
+  }
   if (!normalized.includes('@')) return `${normalized}@skolehr.xyz`;
   return normalized.replace(/@eskole\.(me|hr)$/i, '@skolehr.xyz');
 }
