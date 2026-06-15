@@ -78,7 +78,7 @@ export async function getStudentContext(
 
   const { data: candidate, error: candidateError } = await admin
     .from('admission_candidates')
-    .select('id')
+    .select('id, source_school_id, source_class_id, school_year_id')
     .eq('registry_student_id', student.id)
     .eq('track', track)
     .limit(1)

@@ -1557,3 +1557,32 @@ select:focus {
     min-height: auto;
   }
 }
+.mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid #cbd8da;
+  background: #f3f7f6;
+}
+
+.mode-switch button {
+  min-height: 42px;
+  border: 0;
+  background: transparent;
+  color: #36565b;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.mode-switch button.active {
+  background: #257d86;
+  color: #fff;
+}
+
+@media (max-width: 560px) {
+  .mode-switch {
+    grid-template-columns: 1fr;
+  }
+}

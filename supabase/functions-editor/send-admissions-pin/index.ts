@@ -78,7 +78,7 @@ export async function getStudentContext(
 
   const { data: candidate, error: candidateError } = await admin
     .from('admission_candidates')
-    .select('id')
+    .select('id, source_school_id, source_class_id, school_year_id')
     .eq('registry_student_id', student.id)
     .eq('track', track)
     .limit(1)
@@ -180,14 +180,67 @@ export async function decryptPin(value: string) {
 }
 
 type AdmissionsTrack = 'SECONDARY' | 'HIGHER_EDUCATION';
+type DeliveryMethod = 'STUDENT_PHONE' | 'SCHOOL_ADMIN_PHONE';
+
+async function resolveSchoolAdministratorPhone(
+  admin: ReturnType<typeof getAdminClient>,
+  schoolId: string,
+  schoolYearId: string,
+) {
+  const { data: roles, error: rolesError } = await admin
+    .from('user_school_roles')
+    .select('user_id, role, status')
+    .eq('school_id', schoolId);
+  if (rolesError) throw rolesError;
+
+  const priority = ['MAIN_ADMIN', 'SCHOOL_ADMIN', 'ADMIN'];
+  const activeRoles = (roles ?? [])
+    .filter((item) => String(item.status ?? 'ACTIVE').toUpperCase() !== 'INACTIVE')
+    .filter((item) => priority.includes(String(item.role ?? '').toUpperCase()))
+    .sort((a, b) =>
+      priority.indexOf(String(a.role).toUpperCase())
+      - priority.indexOf(String(b.role).toUpperCase())
+    );
+
+  for (const role of activeRoles) {
+    const { data: profile, error } = await admin
+      .from('user_profiles')
+      .select('*')
+      .eq('id', role.user_id)
+      .maybeSingle();
+    if (error) throw error;
+    const phone = normalizePhone(String(
+      profile?.mobile ?? profile?.phone ?? profile?.phone_number ?? '',
+    ));
+    if (!/^\+385\d{9}$/.test(phone)) continue;
+
+    await admin.from('school_admission_contact_numbers').upsert({
+      school_id: schoolId,
+      school_year_id: schoolYearId,
+      phone,
+      source_profile_id: profile.id,
+      source_role: String(role.role),
+      selected_at: new Date().toISOString(),
+    }, { onConflict: 'school_id,school_year_id' });
+
+    return { phone, profileId: profile.id };
+  }
+
+  throw new Error('Nijedan aktivni administrator škole nema upisan hrvatski broj mobitela.');
+}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
   try {
-    const { track, phone_number: phoneNumber } = await req.json() as {
+    const {
+      track,
+      phone_number: phoneNumber,
+      delivery_method: requestedDeliveryMethod,
+    } = await req.json() as {
       track: AdmissionsTrack;
       phone_number?: string;
+      delivery_method?: DeliveryMethod;
     };
     if (!['SECONDARY', 'HIGHER_EDUCATION'].includes(track)) {
       return jsonResponse({ error: 'Neispravan upisni portal.' }, 400);
@@ -198,16 +251,32 @@ Deno.serve(async (req) => {
 
     const { data: existing } = await admin
       .from('admission_login_accounts')
-      .select('phone, pin_requested_at, locked_until, pin_hash, encrypted_pin, pin_generated_at')
+      .select('phone, delivery_method, pin_requested_at, locked_until, pin_hash, encrypted_pin, pin_generated_at')
       .eq('registry_student_id', context.student.id)
       .maybeSingle();
 
-    const enteredDigits = String(phoneNumber ?? '').replace(/\D/g, '').replace(/^385/, '');
-    const phone = existing?.phone
-      ? normalizePhone(String(existing.phone))
-      : enteredDigits.length === 9
+    const deliveryMethod: DeliveryMethod = requestedDeliveryMethod
+      ?? existing?.delivery_method
+      ?? 'STUDENT_PHONE';
+    let phone = '';
+    let deliveryAdminProfileId: string | null = null;
+    if (deliveryMethod === 'SCHOOL_ADMIN_PHONE') {
+      if (!context.candidate.source_school_id || !context.candidate.school_year_id) {
+        throw new Error('Kandidat nema povezanu školu ili školsku godinu.');
+      }
+      const administratorContact = await resolveSchoolAdministratorPhone(
+        admin,
+        context.candidate.source_school_id,
+        context.candidate.school_year_id,
+      );
+      phone = administratorContact.phone;
+      deliveryAdminProfileId = administratorContact.profileId;
+    } else {
+      const enteredDigits = String(phoneNumber ?? '').replace(/\D/g, '').replace(/^385/, '');
+      phone = enteredDigits.length === 9
         ? `+385${enteredDigits}`
-        : '';
+        : normalizePhone(String(existing?.phone ?? ''));
+    }
 
     if (!phone || !/^\+385\d{9}$/.test(phone)) {
       return jsonResponse({
@@ -257,6 +326,10 @@ Deno.serve(async (req) => {
         auth_user_id: user.id,
         username: context.username,
         phone,
+        delivery_method: deliveryMethod,
+        delivery_school_id: context.candidate.source_school_id,
+        delivery_school_year_id: context.candidate.school_year_id,
+        delivery_admin_profile_id: deliveryAdminProfileId,
         pin_hash: pinHash,
         encrypted_pin: encryptedPin,
         pin_generated_at: pinGeneratedAt,
@@ -280,7 +353,9 @@ Deno.serve(async (req) => {
 
     const body = new URLSearchParams({
       To: phone,
-      Body: `SkoleHR e-Upisi trajni PIN: ${pin}. Sacuvajte ga i ne dijelite s drugima.`,
+      Body: deliveryMethod === 'SCHOOL_ADMIN_PHONE'
+        ? `SkoleHR e-Upisi: PIN ${pin} za ${context.student.first_name} ${context.student.last_name}. Predajte PIN samo tom uceniku.`
+        : `SkoleHR e-Upisi trajni PIN: ${pin}. Sacuvajte ga i ne dijelite s drugima.`,
     });
 
     if (messagingServiceSid) body.set('MessagingServiceSid', messagingServiceSid);
@@ -323,6 +398,7 @@ Deno.serve(async (req) => {
       sent: true,
       masked_phone: maskPhone(phone),
       permanent: true,
+      delivery_method: deliveryMethod,
     });
   } catch (error) {
     return jsonResponse({

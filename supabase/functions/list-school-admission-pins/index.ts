@@ -44,6 +44,13 @@ Deno.serve(async (req) => {
 
     if (yearError || !activeYear) throw new Error('Aktivna školska godina nije postavljena.');
 
+    const { data: administratorContact } = await admin
+      .from('school_admission_contact_numbers')
+      .select('phone, source_profile_id, source_role, selected_at')
+      .eq('school_id', school.id)
+      .eq('school_year_id', activeYear.id)
+      .maybeSingle();
+
     const viewName = school.education_level === 'ELEMENTARY'
       ? 'v_admissions_secondary_eligible'
       : school.education_level === 'SECONDARY'
@@ -125,6 +132,7 @@ Deno.serve(async (req) => {
         pin_generated_at: account?.pin_generated_at ?? null,
         pin_delivered_at: account?.pin_delivered_at ?? null,
         last_verified_at: account?.last_verified_at ?? null,
+        delivery_method: account?.delivery_method ?? 'STUDENT_PHONE',
         status: accountStatus,
       });
     }
@@ -133,6 +141,13 @@ Deno.serve(async (req) => {
       school,
       school_year: activeYear,
       track,
+      administrator_contact: administratorContact
+        ? {
+            phone: maskPhone(normalizePhone(String(administratorContact.phone ?? ''))),
+            source_role: administratorContact.source_role,
+            selected_at: administratorContact.selected_at,
+          }
+        : null,
       students: result,
     });
   } catch (error) {

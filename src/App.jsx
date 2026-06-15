@@ -1342,6 +1342,7 @@ function Login({ section = APP_SECTIONS.ematica, notice = '', onClearNotice = ()
 
 function FirstAdmissionsActivation({ section, context, onComplete, onCancel }) {
   const [phone, setPhone] = useState('');
+  const [deliveryMethod, setDeliveryMethod] = useState('STUDENT_PHONE');
   const [error, setError] = useState(context?.error ?? '');
   const [sending, setSending] = useState(false);
 
@@ -1349,7 +1350,7 @@ function FirstAdmissionsActivation({ section, context, onComplete, onCancel }) {
     event.preventDefault();
     const digits = phone.replace(/\D/g, '');
 
-    if (!/^\d{9}$/.test(digits)) {
+    if (deliveryMethod === 'STUDENT_PHONE' && !/^\d{9}$/.test(digits)) {
       setError('Unesite broj mobitela od 9 znamenki, primjerice 915828966.');
       return;
     }
@@ -1359,7 +1360,8 @@ function FirstAdmissionsActivation({ section, context, onComplete, onCancel }) {
     const { data, error: functionError } = await supabase.functions.invoke('send-admissions-pin', {
       body: {
         track: context?.track,
-        phone_number: digits,
+        phone_number: deliveryMethod === 'STUDENT_PHONE' ? digits : undefined,
+        delivery_method: deliveryMethod,
       },
     });
     setSending(false);
@@ -1369,9 +1371,9 @@ function FirstAdmissionsActivation({ section, context, onComplete, onCancel }) {
       return;
     }
 
-    await onComplete(
-      'PIN je poslan SMS-om. Ponovno se prijavite korisničkim imenom, lozinkom i dobivenim PIN-om.',
-    );
+    await onComplete(deliveryMethod === 'SCHOOL_ADMIN_PHONE'
+      ? 'PIN je poslan administratoru škole i prikazan je u e-Matici. Prepišite svoj PIN pa se ponovno prijavite.'
+      : 'PIN je poslan SMS-om. Ponovno se prijavite korisničkim imenom, lozinkom i dobivenim PIN-om.');
   };
 
   return (
@@ -1388,34 +1390,49 @@ function FirstAdmissionsActivation({ section, context, onComplete, onCancel }) {
         <div className="pin-explanation">
           <ShieldAlert size={20} />
           <p>
-            Ovo je vaša prva prijava. Unesite broj mobitela na koji ćemo poslati
-            vaš trajni četveroznamenkasti PIN.
+            Ovo je vaša prva prijava. Odaberite kamo ćemo poslati vaš trajni
+            četveroznamenkasti PIN.
           </p>
         </div>
-        <label>
-          Broj mobitela
-          <div className="phone-input">
-            <span aria-hidden="true">+385</span>
-            <input
-              value={phone}
-              onChange={(event) => setPhone(event.target.value.replace(/\D/g, '').slice(0, 9))}
-              type="text"
-              inputMode="tel"
-              autoComplete="tel-national"
-              placeholder="915828966"
-              maxLength={9}
-              aria-label="Broj mobitela bez pozivnog broja"
-              autoFocus
-              required
-            />
-          </div>
-        </label>
+        <div className="mode-switch" role="group" aria-label="Način dostave PIN-a">
+          <button className={deliveryMethod === 'STUDENT_PHONE' ? 'active' : ''} type="button" onClick={() => setDeliveryMethod('STUDENT_PHONE')}>
+            Moj broj mobitela
+          </button>
+          <button className={deliveryMethod === 'SCHOOL_ADMIN_PHONE' ? 'active' : ''} type="button" onClick={() => setDeliveryMethod('SCHOOL_ADMIN_PHONE')}>
+            Broj administratora škole
+          </button>
+        </div>
+        {deliveryMethod === 'STUDENT_PHONE' ? (
+          <label>
+            Broj mobitela
+            <div className="phone-input">
+              <span aria-hidden="true">+385</span>
+              <input
+                value={phone}
+                onChange={(event) => setPhone(event.target.value.replace(/\D/g, '').slice(0, 9))}
+                type="text"
+                inputMode="tel"
+                autoComplete="tel-national"
+                placeholder="915828966"
+                maxLength={9}
+                aria-label="Broj mobitela bez pozivnog broja"
+                autoFocus
+                required
+              />
+            </div>
+          </label>
+        ) : (
+          <p className="notice">
+            Sustav će automatski koristiti službeni broj glavnog administratora vaše škole
+            za tekuću školsku godinu. PIN će administrator vidjeti uz vaše ime u e-Matici.
+          </p>
+        )}
         <p className="auth-help">
           Nakon slanja PIN-a sustav će vas odjaviti. Pri sljedećoj prijavi unesite
           korisničko ime, lozinku i PIN iz SMS poruke.
         </p>
         {error && <p className="error">{error}</p>}
-        <button className="primary" type="submit" disabled={sending || phone.length !== 9}>
+        <button className="primary" type="submit" disabled={sending || (deliveryMethod === 'STUDENT_PHONE' && phone.length !== 9)}>
           {sending ? <Loader2 className="spin" size={18} /> : <CheckCircle2 size={18} />}
           <span>Pošalji PIN</span>
         </button>
@@ -2395,6 +2412,10 @@ function StudentPins() {
           <Metric label="Školska godina" value={state.data?.school_year?.label ?? '-'} />
           <Metric label="Upisni sustav" value={trackLabel} />
           <Metric label="Broj učenika" value={students.length} />
+          <Metric
+            label="Administrativni broj"
+            value={state.data?.administrator_contact?.phone ?? 'Aktivira se automatski pri prvom zahtjevu'}
+          />
         </div>
         <p className="notice">
           Svaki učenik ima jedan trajni četveroznamenkasti PIN. Prikaz je automatski
@@ -2413,6 +2434,7 @@ function StudentPins() {
               'Korisničko ime',
               'PIN',
               'Mobitel',
+              'Dostava',
               'SMS poslan',
               'Zadnja potvrda',
               'Status',
@@ -2426,6 +2448,9 @@ function StudentPins() {
                 ? <strong className="student-pin" key={`${student.registry_student_id}-pin`}>{student.pin}</strong>
                 : '-',
               student.phone || '-',
+              student.delivery_method === 'SCHOOL_ADMIN_PHONE'
+                ? 'Administrator škole'
+                : 'Učenikov broj',
               formatDateTime(student.pin_delivered_at),
               formatDateTime(student.last_verified_at),
               statusLabel(student.status),
