@@ -16,15 +16,17 @@ async function findAuthUserByEmails(
   admin: ReturnType<typeof createClient>,
   emails: string[],
 ) {
-  const acceptedEmails = new Set(emails.map((email) => email.toLowerCase()));
+  const normalizedEmails = emails.map((email) => email.toLowerCase());
+  const users: Array<{ id: string; email?: string | null }> = [];
   for (let page = 1; ; page += 1) {
     const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 1000 });
     if (error) throw error;
-    const user = data.users.find((item) =>
-      acceptedEmails.has(String(item.email ?? '').toLowerCase())
-    );
-    if (user || data.users.length < 1000) return user ?? null;
+    users.push(...data.users);
+    if (data.users.length < 1000) break;
   }
+  return normalizedEmails
+    .map((email) => users.find((item) => String(item.email ?? '').toLowerCase() === email))
+    .find(Boolean) ?? null;
 }
 
 Deno.serve(async (req) => {
@@ -151,9 +153,12 @@ Deno.serve(async (req) => {
       const sourceEmail = String(student?.email ?? studentProfile?.email ?? '')
         .trim()
         .toLowerCase();
-      const canonicalEmail = sourceEmail.replace(/@eskole\.me$/i, '@skolehr.xyz');
-      const legacyEmail = canonicalEmail.replace(/@skolehr\.xyz$/i, '@eskole.me');
-      const emailCandidates = [...new Set([canonicalEmail, legacyEmail].filter(Boolean))];
+      const canonicalEmail = sourceEmail.replace(/@eskole\.(me|hr)$/i, '@skolehr.xyz');
+      const legacyHrEmail = canonicalEmail.replace(/@skolehr\.xyz$/i, '@eskole.hr');
+      const legacyMeEmail = canonicalEmail.replace(/@skolehr\.xyz$/i, '@eskole.me');
+      const emailCandidates = [
+        ...new Set([canonicalEmail, legacyHrEmail, legacyMeEmail].filter(Boolean)),
+      ];
 
       if (!studentProfile && emailCandidates.length) {
         const { data, error } = await admin
@@ -202,6 +207,7 @@ Deno.serve(async (req) => {
       }
 
       const { error: passwordError } = await admin.auth.admin.updateUserById(authUserId, {
+        ...(canonicalEmail ? { email: canonicalEmail } : {}),
         password: 'yupu8Ev4',
         email_confirm: true,
       });

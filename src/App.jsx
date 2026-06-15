@@ -1108,7 +1108,7 @@ function normalizeLoginEmail(value) {
   const normalized = String(value ?? '').trim().toLowerCase();
   if (!normalized) return '';
   if (!normalized.includes('@')) return `${normalized}@skolehr.xyz`;
-  return normalized.replace(/@eskole\.me$/i, '@skolehr.xyz');
+  return normalized.replace(/@eskole\.(me|hr)$/i, '@skolehr.xyz');
 }
 
 function getAuthErrorMessage(error) {
@@ -1209,16 +1209,21 @@ function Login({ section = APP_SECTIONS.ematica, notice = '', onClearNotice = ()
     }
 
     const normalizedEmail = normalizeLoginEmail(email);
-    let { error: authError } = await supabase.auth.signInWithPassword({
-      email: normalizedEmail,
-      password,
-    });
-    if (authError && normalizedEmail.endsWith('@skolehr.xyz')) {
-      const legacyEmail = normalizedEmail.replace(/@skolehr\.xyz$/i, '@eskole.me');
-      ({ error: authError } = await supabase.auth.signInWithPassword({
-        email: legacyEmail,
+    const loginCandidates = normalizedEmail.endsWith('@skolehr.xyz')
+      ? [
+          normalizedEmail,
+          normalizedEmail.replace(/@skolehr\.xyz$/i, '@eskole.hr'),
+          normalizedEmail.replace(/@skolehr\.xyz$/i, '@eskole.me'),
+        ]
+      : [normalizedEmail];
+    let authError = null;
+    for (const loginEmail of [...new Set(loginCandidates)]) {
+      const result = await supabase.auth.signInWithPassword({
+        email: loginEmail,
         password,
-      }));
+      });
+      authError = result.error;
+      if (!authError) break;
     }
     setLoading(false);
     if (authError) setError(getAuthErrorMessage(authError));
