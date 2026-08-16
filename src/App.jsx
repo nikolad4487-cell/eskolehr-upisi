@@ -215,8 +215,8 @@ function getPreferredSectionFromHost() {
 function getForcedSectionFromHost() {
   if (typeof window === 'undefined') return null;
   const host = window.location.hostname.toLowerCase();
-  if (host.startsWith('srednja.')) return APP_SECTIONS.srednja.id;
-  if (host.startsWith('fakulteti.')) return APP_SECTIONS.fakulteti.id;
+  if (host.startsWith('srednja.') || host.startsWith('e-srednja.')) return APP_SECTIONS.srednja.id;
+  if (host.startsWith('fakulteti.') || host.startsWith('postani-student.')) return APP_SECTIONS.fakulteti.id;
   if (host.startsWith('e-matica.') || host.startsWith('ematica.')) return APP_SECTIONS.ematica.id;
   if (APP_MODE === 'ematica') return APP_SECTIONS.ematica.id;
   return null;

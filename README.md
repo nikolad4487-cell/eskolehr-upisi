@@ -16,7 +16,9 @@ U Supabase Dashboardu pod Authentication > URL Configuration dodati:
 
 ```text
 https://srednja.skolehr.xyz
+https://e-srednja.skolehr.xyz
 https://fakulteti.skolehr.xyz
+https://postani-student.skolehr.xyz
 http://127.0.0.1:5173
 ```
 
