@@ -1883,6 +1883,7 @@ function AdmissionsModule({ track, profile, session, access, isStudent = false, 
   }, [activeSchoolId]);
   const [candidateForm, setCandidateForm] = useState({ class_id: '', school_year_id: '' });
   const [enrollForm, setEnrollForm] = useState({ school_year_id: '' });
+  const [enrolling, setEnrolling] = useState(false);
   const [enrollResults, setEnrollResults] = useState([]);
   const [choiceForm, setChoiceForm] = useState({ target_program_id: '', priority: 1 });
   const [workflowForm, setWorkflowForm] = useState({ candidate_id: '', points: '' });
@@ -2094,7 +2095,10 @@ function AdmissionsModule({ track, profile, session, access, isStudent = false, 
   };
 
   const enrollAccepted = async () => {
-    setMessage('');
+    if (enrolling) return;
+    if (!enrollForm.school_year_id) { setMessage('Odaberite školsku godinu upisa u ciljnu ustanovu.'); return; }
+    setEnrolling(true); setMessage(''); setEnrollResults([]);
+    try {
     const { data, error } = await supabase.rpc('enroll_accepted_admission_candidates', {
       p_track: effectiveTrack,
       p_school_year_id: enrollForm.school_year_id || null,
@@ -2103,8 +2107,14 @@ function AdmissionsModule({ track, profile, session, access, isStudent = false, 
 
     const enrolled = data?.filter((row) => row.result === 'ENROLLED').length ?? 0;
     const existing = data?.filter((row) => row.result === 'EXISTS').length ?? 0;
+    if (error) throw error;
+    const failed = data?.filter(row => String(row.result).startsWith('ERROR:')).length ?? 0;
     setEnrollResults(data ?? []);
-    setMessage(error ? error.message : `Upis prihvaćenih je proveden. Novo upisano: ${enrolled}, već postoji: ${existing}.`);
+    setMessage(data?.length
+      ? `Upisi u e-Maticu: ${enrolled} novih, ${existing} postojećih, ${failed} neuspjelih. Škola zatim povlači učenike iz e-Matice u odgovarajući razred e-Dnevnika.`
+      : 'Nema prihvaćenih kandidata za upis u odabranu ustanovu.');
+    } catch (error) { setMessage(error.message || 'Provedba upisa nije uspjela.'); }
+    finally { setEnrolling(false); }
   };
 
   return (
@@ -2261,17 +2271,17 @@ function AdmissionsModule({ track, profile, session, access, isStudent = false, 
 
           <Panel title="Provedba upisa">
             <div className="inline-form compact">
-              <select value={enrollForm.school_year_id} onChange={(e) => setEnrollForm({ ...enrollForm, school_year_id: e.target.value })}>
-                <option value="">Godina iz kandidature</option>
+              <select aria-label="Školska godina konačnog upisa" disabled={enrolling} value={enrollForm.school_year_id} onChange={(e) => setEnrollForm({ ...enrollForm, school_year_id: e.target.value })}>
+                <option value="">Odaberite godinu upisa u ciljnu ustanovu</option>
                 {years.data.map((year) => <option key={year.id} value={year.id}>{year.label ?? year.name}</option>)}
               </select>
-              <button className="primary" type="button" onClick={enrollAccepted}>
+              <button className="primary" type="button" disabled={enrolling || !enrollForm.school_year_id || (!isTargetInstitutionManager && !!activeSchoolId)} onClick={enrollAccepted}>
                 <CheckCircle2 size={18} />
-                <span>Provedi upis prihvaćenih</span>
+                <span>{enrolling ? 'Upis u tijeku…' : 'Potvrdi upis i prenesi u e-Maticu'}</span>
               </button>
             </div>
             <p className="notice">
-              Prihvaćeni kandidat dobiva aktivan upis u ciljnu školu/fakultet i program. Postojeći upisi se ne dupliciraju.
+              Konačni upis provodi ciljna ustanova ili glavni administrator. Odaberite godinu početka školovanja; za srednju školu to je godina nakon završetka osnovne. Potvrdom učenik ulazi u e-Maticu upisane škole i programa. Nakon toga škola odabire razred i povlači učenika u e-Dnevnik. Ponovljeni prijenos ne stvara duplikate.
             </p>
             {enrollResults.length > 0 && (
               <Table
